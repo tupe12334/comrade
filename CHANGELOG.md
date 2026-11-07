@@ -5,8 +5,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Hook input and output now go through the `polyhook` crate. modelgate supports every agent that polyhook supports.
+- `modelgate hook` works without an agent name. `modelgate hook claude` still works.
+- `modelgate install claude` writes `modelgate hook`. Existing `modelgate hook claude` entries still work.
+- `modelgate install <agent>` prints the hook event and docs link for each polyhook agent. `--write` still edits Claude Code settings only.
+- The `MODELGATE_MODEL` override applies to every agent.
+- Edit tools from other agents (`write_file`, `edit_file`) and Bash writes are checked the same way as Claude Code calls.
+
+### Removed
+
+- The Claude Code input and output modules. polyhook replaces them.
+- The `AgentIntegration` trait.
+
 ### Added
 
+- Supported agents section in the README, listing the agents that polyhook supports.
 - Config layers: built-in defaults, `config.toml`, `config.local.toml`, and `.modelgate.toml`.
 - Rules with glob file patterns and model patterns (substring or glob, case-insensitive).
 - Commands: `init`, `check`, `explain`, `install claude`, and `hook claude`.

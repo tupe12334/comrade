@@ -22,6 +22,33 @@ cargo install modelgate
 
 Make sure `modelgate` is on your `PATH`. The hook entry runs the command by name.
 
+## Supported agents
+
+modelgate uses [polyhook](https://github.com/polyhook/polyhook), so it supports every agent polyhook supports. polyhook reads each agent's hook input and writes its response. modelgate needs no code for each agent.
+
+polyhook supports these agents:
+
+| Agent | Before-tool hook event | Hook docs |
+| --- | --- | --- |
+| Claude Code | `PreToolUse` | <https://code.claude.com/docs/en/hooks> |
+| Cursor | `BeforeToolCall` | <https://cursor.com/docs/hooks> |
+| Windsurf | `pre_tool` | <https://docs.windsurf.com/windsurf/cascade/hooks> |
+| Cline | `beforeToolUse` | <https://github.com/cline/cline> |
+| Amp | `tool.before` | <https://ampcode.com/news/hooks> |
+| Gemini CLI | `BeforeTool` | <https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/index.md> |
+| Hermes Agent | `pre_tool_call` | <https://hermes-agent.nousresearch.com/docs/user-guide/features/hooks> |
+| Pi | `PreToolUse` (Claude Code format) | <https://github.com/eleqtrizit/pi-autohooks> |
+| Codex | `PreToolUse` (Claude Code format) | <https://developers.openai.com/codex/hooks> |
+
+For each agent, register `modelgate hook` as the command for its before-tool hook. You do not need to name the agent. polyhook detects it from the input. `modelgate install <agent>` prints the event and the docs link for that agent.
+
+| Agent | Install | Model name |
+| --- | --- | --- |
+| Claude Code | `modelgate install claude --write` | From the session transcript, or `MODELGATE_MODEL`. |
+| Other agents | Add `modelgate hook` for the before-tool event. See the table above. | Set `MODELGATE_MODEL`. Without it the model is unknown. |
+
+The model name of other agents is not in polyhook's hook input yet. See the note in [How the model is found](#how-the-model-is-found).
+
 ## Quick start
 
 1. Write the default config:
@@ -63,8 +90,8 @@ Make sure `modelgate` is on your `PATH`. The hook entry runs the command by name
 | `modelgate init [--force]` | Writes `config.toml`, a `.gitignore`, and runs `git init` if needed. Never commits. |
 | `modelgate check` | Validates every config file and the merged config. |
 | `modelgate explain <file> [--model M] [--cwd DIR]` | Shows the matched rule, the model match, and the decision. |
-| `modelgate install claude [--write]` | Prints or writes the `PreToolUse` hook entry. |
-| `modelgate hook claude` | Reads the hook input on stdin. Agents call this command, not you. |
+| `modelgate install <agent> [--write]` | Prints the hook entry for an agent. `--write` edits Claude Code settings only. |
+| `modelgate hook [agent]` | Reads the hook input on stdin and writes the response. Agents call this command, not you. The agent is detected unless you name it, for example `claude`. |
 
 All commands accept `--config-dir DIR`.
 
@@ -203,11 +230,16 @@ Keep the folder free of absolute paths and machine-specific values. Put those in
 
 ## How the model is found
 
-Claude Code does not send the model in the hook input. modelgate reads the session transcript named in `transcript_path`. It uses the model of the last assistant message.
+polyhook does not carry the model name in its hook input. modelgate looks for the model in this order:
 
-When the call comes from a subagent, the hook input has an `agent_id`. modelgate then reads the subagent transcript, at `<session>/subagents/agent-<agent_id>.jsonl`. A Haiku subagent can therefore edit files while the main session runs on Opus.
+1. `MODELGATE_MODEL`, if set. This works for every agent.
+2. For Claude Code only, the session transcript named in `transcript_path`. modelgate uses the model of the last assistant message.
+
+When a Claude Code call comes from a subagent, the hook input has an `agent_id`. modelgate then reads the subagent transcript, at `<session>/subagents/agent-<agent_id>.jsonl`. A Haiku subagent can therefore edit files while the main session runs on Opus.
 
 If the subagent transcript is missing, the model is unknown. modelgate does not use the main session model in that case.
+
+If the model is unknown, `unknown_model` decides the edit. The default is `block`.
 
 ## Bash writes
 
@@ -227,17 +259,11 @@ If the hook fails, modelgate prints a message to stderr. It then applies `on_err
 
 ## Add an agent
 
-Each agent is one module under `src/agents/`. The module implements the `AgentIntegration` trait in `src/agents/mod.rs`:
+polyhook reads and writes the hook format of each agent. To use a new agent, check that polyhook supports it. modelgate needs no change for file edits or Bash writes.
 
-- `parse` reads the agent hook input and returns the files, the working directory, and where to find the transcript.
-- `detect_model` returns the model name, or `None`.
-- `block` returns the response that denies the edit.
+To add a model lookup for an agent, add a branch in `src/hook/model.rs`. The branch reads the agent transcript or other data. Keep the `MODELGATE_MODEL` override first.
 
-Then add the agent name to `by_name` in `src/agents/mod.rs`, and add a `hook` and `install` branch in `src/cli.rs` and `src/commands/install.rs`.
-
-Use `src/agents/claude_code/` as the example.
-
-Agents that do not expose the file path and the tool name in their hook input cannot be supported yet.
+To list the agent in `modelgate install`, add it to `POLYHOOK_AGENTS` in `src/agents/mod.rs`.
 
 ## Environment variables
 
@@ -246,6 +272,7 @@ Agents that do not expose the file path and the tool name in their hook input ca
 | `MODELGATE_CONFIG_DIR` | Config folder. Overrides the default. |
 | `MODELGATE_MODEL` | Model name to use instead of the detected model. |
 | `CLAUDE_CONFIG_DIR` | Claude Code settings folder used by `install claude --write`. |
+| `POLYHOOK_CALLER` | Agent name that polyhook uses, for example `cursor`. Overrides detection. `modelgate hook <agent>` sets it when it is unset. |
 
 ## Development
 
