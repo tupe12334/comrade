@@ -41,7 +41,7 @@ pub enum Error {
     HookOutput(String),
 
     /// The agent name given on the command line is not known.
-    #[error("unknown agent `{0}`; known agents: claude")]
+    #[error("unknown agent `{0}`. See the Supported agents section of the README")]
     UnknownAgent(String),
 
     /// The config directory cannot be found (no home directory).

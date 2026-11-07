@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::agents;
 use crate::commands::{check, explain, init, install};
 use crate::config::LoadOptions;
 use crate::error::Result;
@@ -57,8 +56,8 @@ pub enum Command {
     },
     /// Run the hook. Reads the agent hook input on stdin. Called by the agent.
     Hook {
-        /// Agent name, for example `claude`.
-        agent: String,
+        /// Optional agent name, for example `claude`. polyhook detects the agent when omitted.
+        agent: Option<String>,
     },
 }
 
@@ -129,9 +128,11 @@ fn dispatch(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Command::Hook { agent } => {
-            let integration = agents::by_name(&agent)?;
-            let mut stdin = String::new();
-            if let Err(error) = std::io::stdin().read_to_string(&mut stdin) {
+            if let Some(name) = agent.as_deref() {
+                hook::use_agent_hint(name)?;
+            }
+            let mut stdin = Vec::new();
+            if let Err(error) = std::io::stdin().read_to_end(&mut stdin) {
                 stdin.clear();
                 eprintln!("modelgate: cannot read stdin: {error}");
             }
@@ -141,7 +142,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
                     .ok()
                     .filter(|m| !m.trim().is_empty()),
             };
-            let outcome = hook::run(integration, &stdin, &options);
+            let outcome = hook::run(&stdin, &options);
             if !outcome.stdout.is_empty() {
                 let mut out = std::io::stdout().lock();
                 let _ = writeln!(out, "{}", outcome.stdout);
