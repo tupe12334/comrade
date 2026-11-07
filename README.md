@@ -2,6 +2,14 @@
 
 modelgate blocks code edits from AI agents unless the editing model is allowed for that file type.
 
+## Why
+
+Goal: expensive model tokens, such as Opus tokens, must not be spent on typing code. Opus governs. It plans, splits the work, and sends Haiku subagents to make the code edits. Then it reviews their results. Haiku tokens cost less and run faster for typing. modelgate enforces this: when Opus tries to edit a code file, the hook blocks the edit and tells it to send a Haiku subagent instead.
+
+1. Opus plans.
+2. Haiku subagents edit.
+3. Opus reviews.
+
 For example, only Haiku may edit `*.rs`. When Opus tries to edit a Rust file, the hook blocks the edit. The agent sees this message: "Send this edit to a Haiku subagent."
 
 modelgate is a Rust library and a command-line tool. Claude Code is supported today.
