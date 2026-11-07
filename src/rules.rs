@@ -10,7 +10,7 @@ use crate::template;
 
 /// Message used when `default_action` blocks a file that no rule covers.
 const NO_RULE_BLOCK_MESSAGE: &str =
-    "Send this edit to a Haiku subagent. Model {model} may not edit {file}.";
+    "Comrade {model}, the Party does not type. Send a Haiku comrade (subagent) to edit {file}.";
 
 /// The outcome for one edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +24,7 @@ pub enum Verdict {
     },
 }
 
-/// Full explanation of one decision. `modelgate explain` prints this.
+/// Full explanation of one decision. `comrade explain` prints this.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evaluation {
     /// The file, relative to the project root when it is inside it.
@@ -110,7 +110,7 @@ impl Engine {
                 model,
                 None,
                 None,
-                "modelgate is disabled",
+                "comrade is disabled",
                 Verdict::Allow,
             );
         }
@@ -369,7 +369,7 @@ mod tests {
             Verdict::Block { message } => {
                 assert_eq!(
                     message,
-                    "Send this edit to a Haiku subagent. Model opus may not edit /proj/a.ts."
+                    "Comrade opus, the Party does not type. Send a Haiku comrade (subagent) to edit /proj/a.ts."
                 );
             }
             Verdict::Allow => panic!("expected block"),
@@ -398,7 +398,7 @@ mod tests {
         assert!(blocked(&eval.verdict));
         match eval.verdict {
             Verdict::Block { message } => {
-                assert!(message.contains("Could not detect the model that edits /p/a.py"))
+                assert!(message.contains("the Party could not tell who typed /p/a.py"))
             }
             Verdict::Allow => unreachable!(),
         }

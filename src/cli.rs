@@ -13,9 +13,9 @@ use crate::paths;
 
 /// Blocks code edits from AI agents unless the editing model is allowed.
 #[derive(Debug, Parser)]
-#[command(name = "modelgate", version, about, long_about = None)]
+#[command(name = "comrade", version, about, long_about = None)]
 pub struct Cli {
-    /// Config folder. Overrides MODELGATE_CONFIG_DIR and the default location.
+    /// Config folder. Overrides COMRADE_CONFIG_DIR and the default location.
     #[arg(long, global = true, value_name = "DIR")]
     pub config_dir: Option<PathBuf>,
 
@@ -39,7 +39,7 @@ pub enum Command {
     Explain {
         /// The file to check. Relative paths use --cwd.
         file: PathBuf,
-        /// The model that edits the file. Defaults to MODELGATE_MODEL, else unknown.
+        /// The model that edits the file. Defaults to COMRADE_MODEL, else unknown.
         #[arg(long)]
         model: Option<String>,
         /// Working directory for relative paths and the project root. Defaults to the current directory.
@@ -71,7 +71,7 @@ where
     match dispatch(cli) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("modelgate: {error}");
+            eprintln!("comrade: {error}");
             1
         }
     }
@@ -134,7 +134,7 @@ fn dispatch(cli: Cli) -> Result<i32> {
             let mut stdin = Vec::new();
             if let Err(error) = std::io::stdin().read_to_end(&mut stdin) {
                 stdin.clear();
-                eprintln!("modelgate: cannot read stdin: {error}");
+                eprintln!("comrade: cannot read stdin: {error}");
             }
             let options = HookOptions {
                 config_dir: cli.config_dir,

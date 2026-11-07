@@ -1,7 +1,7 @@
 //! Finds the files that a normalized polyhook event writes to.
 //!
 //! polyhook maps file tools to `write_file` and `edit_file`, and shell calls
-//! to `bash`. Two Claude Code tools reach modelgate under their own names,
+//! to `bash`. Two Claude Code tools reach comrade under their own names,
 //! because polyhook does not map them yet: `MultiEdit` and `NotebookEdit`.
 //!
 //! polyhook does not normalize the path key of a file tool, so the path is

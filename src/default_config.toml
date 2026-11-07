@@ -1,10 +1,10 @@
-# modelgate config.
+# comrade config.
 #
-# This file lives in ~/.config/modelgate/config.toml. Sync the folder with git
+# This file lives in ~/.config/comrade/config.toml. Sync the folder with git
 # to share it between computers. Do not put absolute paths or machine-specific
 # values here. Put those in config.local.toml, which git ignores.
 #
-# A project can override this config with a .modelgate.toml file in its root.
+# A project can override this config with a .comrade.toml file in its root.
 
 # Turns the whole hook on or off.
 enabled = true
@@ -17,7 +17,7 @@ unknown_model = "block"
 
 # Message sent to the agent when the model is unknown.
 # Placeholders: {file}, {model}, {allowed}, {rule}.
-unknown_model_message = "Could not detect the model that edits {file}. Send this edit to a Haiku subagent."
+unknown_model_message = "Comrade, the Party could not tell who typed {file}. Send a Haiku comrade (subagent) to edit it."
 
 # Action when the hook itself fails, for example on bad input or a broken
 # config. "allow" keeps a broken config from locking you out.
@@ -60,7 +60,7 @@ files = [
     "*.sh",
 ]
 allowed_models = ["*haiku*"]
-message = "Send this edit to a Haiku subagent. Model {model} may not edit {file}."
+message = "Comrade {model}, the Party does not type. Send a Haiku comrade (subagent) to edit {file}."
 
 # Example, not active. Uncomment and change to add your own rule.
 #

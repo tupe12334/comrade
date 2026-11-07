@@ -1,14 +1,14 @@
 [package]
-name = "modelgate"
+name = "comrade"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Ofek Gabay"]
 description = "Block code edits from AI agents unless the editing model is allowed for that file type"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/tupe12334/modelgate"
-homepage = "https://github.com/tupe12334/modelgate"
-documentation = "https://docs.rs/modelgate"
+repository = "https://github.com/tupe12334/comrade"
+homepage = "https://github.com/tupe12334/comrade"
+documentation = "https://docs.rs/comrade"
 readme = "README.md"
 keywords = ["claude-code", "ai-agent", "hook", "llm", "guardrail"]
 categories = ["development-tools", "command-line-utilities"]
@@ -23,7 +23,7 @@ include = [
 ]
 
 [[bin]]
-name = "modelgate"
+name = "comrade"
 path = "src/main.rs"
 
 [dependencies]

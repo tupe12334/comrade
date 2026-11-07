@@ -1,7 +1,7 @@
-//! `modelgate install <agent>`: prints or writes the hook entry for an agent.
+//! `comrade install <agent>`: prints or writes the hook entry for an agent.
 //!
 //! Claude Code settings can be written. Other polyhook agents get the
-//! instructions to add `modelgate hook` by hand.
+//! instructions to add `comrade hook` by hand.
 
 use std::path::PathBuf;
 
@@ -18,7 +18,7 @@ pub fn print_instructions(agent: &str) -> Result<String> {
     if info.name == "claude-code" {
         let path = install::settings_path()?;
         return Ok(format!(
-            "Add this entry under \"hooks\" in {}, or run `modelgate install claude --write`.\n\n{}\n",
+            "Add this entry under \"hooks\" in {}, or run `comrade install claude --write`.\n\n{}\n",
             path.display(),
             install::snippet()
         ));
@@ -55,9 +55,9 @@ fn known(agent: &str) -> Result<&'static AgentInfo> {
 
 fn manual_instructions(info: &AgentInfo) -> String {
     format!(
-        "Register `modelgate hook` as the command for the `{event}` hook in {name}.\n\
+        "Register `comrade hook` as the command for the `{event}` hook in {name}.\n\
          The hook reads the agent input on stdin and writes the response to stdout.\n\
-         Set MODELGATE_MODEL to the model name. {name} has no model lookup yet.\n\
+         Set COMRADE_MODEL to the model name. {name} has no model lookup yet.\n\
          Hook docs: {docs}\n",
         event = info.pre_tool_event,
         name = info.name,

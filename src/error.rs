@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-/// Every error that modelgate can report.
+/// Every error that comrade can report.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A file could not be read or written.

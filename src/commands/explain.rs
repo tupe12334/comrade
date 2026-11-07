@@ -1,4 +1,4 @@
-//! `modelgate explain`: shows which rule matches a file and why.
+//! `comrade explain`: shows which rule matches a file and why.
 
 use std::path::Path;
 
@@ -75,10 +75,7 @@ mod tests {
         assert!(text.contains("file:          /proj/src/lib.rs"), "{text}");
         assert!(text.contains("rule:          source-code"), "{text}");
         assert!(text.contains("decision:      block"), "{text}");
-        assert!(
-            text.contains("Send this edit to a Haiku subagent."),
-            "{text}"
-        );
+        assert!(text.contains("the Party does not type."), "{text}");
     }
 
     #[test]

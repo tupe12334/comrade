@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 
-/// The hook input, as modelgate needs it.
+/// The hook input, as comrade needs it.
 #[derive(Debug, Clone)]
 pub struct HookInput {
     /// The normalized event from polyhook.

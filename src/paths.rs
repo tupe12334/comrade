@@ -7,13 +7,13 @@ use etcetera::BaseStrategy;
 use crate::error::{Error, Result};
 
 /// Name of the program. Used for the config folder and the project file.
-pub const NAME: &str = "modelgate";
+pub const NAME: &str = "comrade";
 
 /// Environment variable that overrides the config folder.
-pub const CONFIG_DIR_ENV: &str = "MODELGATE_CONFIG_DIR";
+pub const CONFIG_DIR_ENV: &str = "COMRADE_CONFIG_DIR";
 
 /// Environment variable that overrides the editing model.
-pub const MODEL_ENV: &str = "MODELGATE_MODEL";
+pub const MODEL_ENV: &str = "COMRADE_MODEL";
 
 /// Shared config file name inside the config folder.
 pub const CONFIG_FILE: &str = "config.toml";
@@ -22,12 +22,12 @@ pub const CONFIG_FILE: &str = "config.toml";
 pub const LOCAL_CONFIG_FILE: &str = "config.local.toml";
 
 /// Project config file in the project root.
-pub const PROJECT_FILE: &str = ".modelgate.toml";
+pub const PROJECT_FILE: &str = ".comrade.toml";
 
 /// Returns the config folder.
 ///
-/// Uses `explicit` when given. Otherwise uses `MODELGATE_CONFIG_DIR`.
-/// Otherwise uses `$XDG_CONFIG_HOME/modelgate`, or `~/.config/modelgate`.
+/// Uses `explicit` when given. Otherwise uses `COMRADE_CONFIG_DIR`.
+/// Otherwise uses `$XDG_CONFIG_HOME/comrade`, or `~/.config/comrade`.
 pub fn config_dir(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(dir) = explicit {
         return Ok(dir.to_path_buf());
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn explicit_dir_wins() {
-        let dir = Path::new("/tmp/explicit-modelgate");
+        let dir = Path::new("/tmp/explicit-comrade");
         assert_eq!(config_dir(Some(dir)).unwrap(), dir);
     }
 

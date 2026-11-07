@@ -35,11 +35,11 @@ impl Sandbox {
     }
 
     fn cmd(&self) -> Command {
-        let mut cmd = Command::cargo_bin("modelgate").unwrap();
-        cmd.env("MODELGATE_CONFIG_DIR", &self.config)
+        let mut cmd = Command::cargo_bin("comrade").unwrap();
+        cmd.env("COMRADE_CONFIG_DIR", &self.config)
             .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
-            .env_remove("MODELGATE_MODEL")
+            .env_remove("COMRADE_MODEL")
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("POLYHOOK_CALLER")
             .env_remove("CLAUDE_CODE_VERSION")
@@ -138,10 +138,7 @@ fn opus_is_blocked_from_rust_with_haiku_message() {
     assert_eq!(value["hookSpecificOutput"]["hookEventName"], "PreToolUse");
     assert_eq!(value["hookSpecificOutput"]["permissionDecision"], "deny");
     let reason = deny_reason(&output.stdout);
-    assert!(
-        reason.starts_with("Send this edit to a Haiku subagent."),
-        "{reason}"
-    );
+    assert!(reason.starts_with("Comrade "), "{reason}");
     assert!(reason.contains("claude-opus-5-5"), "{reason}");
 }
 
@@ -187,7 +184,7 @@ fn missing_subagent_transcript_means_unknown_model_and_block() {
         .success()
         .get_output()
         .clone();
-    assert!(deny_reason(&output.stdout).contains("Could not detect the model"));
+    assert!(deny_reason(&output.stdout).contains("the Party could not tell who typed"));
 }
 
 #[test]
@@ -195,7 +192,7 @@ fn model_override_env_is_used() {
     let sb = Sandbox::new();
     let transcript = sb.transcript("claude-opus-5-5");
     sb.cmd()
-        .env("MODELGATE_MODEL", "claude-haiku-5-5")
+        .env("COMRADE_MODEL", "claude-haiku-5-5")
         .args(["hook", "claude"])
         .write_stdin(sb.edit_input(&transcript, "src/lib.rs", None))
         .assert()
@@ -234,7 +231,7 @@ fn bash_redirect_into_rust_file_is_blocked_for_opus() {
         .success()
         .get_output()
         .clone();
-    assert!(deny_reason(&output.stdout).contains("Send this edit to a Haiku subagent."));
+    assert!(deny_reason(&output.stdout).contains("Send a Haiku comrade (subagent) to edit"));
 }
 
 #[test]
@@ -296,7 +293,7 @@ fn broken_config_does_not_lock_user_out() {
 fn project_file_overrides_user_config() {
     let sb = Sandbox::new();
     std::fs::write(
-        sb.project.join(".modelgate.toml"),
+        sb.project.join(".comrade.toml"),
         "[[rule]]\nname = \"source-code\"\nallowed_models = [\"*opus*\"]\n",
     )
     .unwrap();
@@ -327,7 +324,7 @@ fn local_file_overrides_shared_config() {
 fn init_writes_files_and_check_passes() {
     let sb = Sandbox::new();
     let config = sb.config.join("fresh");
-    Command::cargo_bin("modelgate")
+    Command::cargo_bin("comrade")
         .unwrap()
         .env("HOME", &sb.home)
         .args(["--config-dir", config.to_str().unwrap(), "init"])
@@ -400,7 +397,7 @@ fn explain_shows_rule_and_decision() {
 fn explain_uses_model_env_when_flag_missing() {
     let sb = Sandbox::new();
     sb.cmd()
-        .env("MODELGATE_MODEL", "claude-haiku-5-5")
+        .env("COMRADE_MODEL", "claude-haiku-5-5")
         .args(["explain", "src/app.ts", "--cwd"])
         .arg(&sb.project)
         .assert()
@@ -416,7 +413,7 @@ fn install_prints_snippet_without_touching_settings() {
         .assert()
         .success()
         .stdout(predicate::str::contains("PreToolUse"))
-        .stdout(predicate::str::contains("modelgate hook"));
+        .stdout(predicate::str::contains("comrade hook"));
     assert!(!sb.home.join(".claude").exists());
 }
 
@@ -427,7 +424,7 @@ fn install_other_agent_prints_manual_steps_and_writes_nothing() {
         .args(["install", "cursor"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("modelgate hook"))
+        .stdout(predicate::str::contains("comrade hook"))
         .stdout(predicate::str::contains("BeforeToolCall"))
         .stdout(predicate::str::contains("https://cursor.com/docs/hooks"));
     assert!(!sb.home.join(".cursor").exists());
@@ -474,12 +471,12 @@ fn install_write_merges_keeps_hooks_and_is_idempotent() {
 
     let text = std::fs::read_to_string(&settings).unwrap();
     assert!(text.contains("keep-me"));
-    assert!(text.contains("modelgate hook"));
+    assert!(text.contains("comrade hook"));
     assert!(text.contains("\"theme\": \"dark\""));
     let backups = std::fs::read_dir(&settings_dir)
         .unwrap()
         .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_string_lossy().contains("modelgate-backup"))
+        .filter(|e| e.file_name().to_string_lossy().contains("comrade-backup"))
         .count();
     assert_eq!(backups, 1);
 
@@ -524,7 +521,7 @@ fn unknown_agent_is_an_error() {
 // windsurf-pre-tool).
 // ---------------------------------------------------------------------------
 
-const DENY_PREFIX: &str = "Send this edit to a Haiku subagent.";
+const DENY_PREFIX: &str = "Comrade ";
 
 fn cursor_edit(sb: &Sandbox, file: &str) -> String {
     json!({
@@ -543,7 +540,7 @@ fn cursor_opus_edit_is_denied_in_cursor_format() {
     let sb = Sandbox::new();
     let output = sb
         .cmd()
-        .env("MODELGATE_MODEL", "claude-opus-5-5")
+        .env("COMRADE_MODEL", "claude-opus-5-5")
         .args(["hook"])
         .write_stdin(cursor_edit(&sb, "src/lib.rs"))
         .assert()
@@ -561,7 +558,7 @@ fn cursor_opus_edit_is_denied_in_cursor_format() {
 fn cursor_haiku_edit_is_allowed_with_no_output() {
     let sb = Sandbox::new();
     sb.cmd()
-        .env("MODELGATE_MODEL", "claude-haiku-5-5")
+        .env("COMRADE_MODEL", "claude-haiku-5-5")
         .args(["hook"])
         .write_stdin(cursor_edit(&sb, "src/lib.rs"))
         .assert()
@@ -586,7 +583,7 @@ fn cursor_edit_without_model_is_blocked_as_unknown() {
         value["message"]
             .as_str()
             .unwrap()
-            .contains("Could not detect the model"),
+            .contains("the Party could not tell who typed"),
         "{value}"
     );
 }
@@ -627,7 +624,7 @@ fn cursor_shell_redirect_into_rust_file_is_denied() {
     .to_string();
     let output = sb
         .cmd()
-        .env("MODELGATE_MODEL", "claude-opus-5-5")
+        .env("COMRADE_MODEL", "claude-opus-5-5")
         .args(["hook"])
         .write_stdin(payload)
         .assert()
@@ -648,7 +645,7 @@ fn cursor_after_tool_event_is_allowed() {
     })
     .to_string();
     sb.cmd()
-        .env("MODELGATE_MODEL", "claude-opus-5-5")
+        .env("COMRADE_MODEL", "claude-opus-5-5")
         .args(["hook"])
         .write_stdin(payload)
         .assert()
@@ -671,7 +668,7 @@ fn gemini_cli_write_file_is_denied_for_opus_and_allowed_for_haiku() {
 
     let output = sb
         .cmd()
-        .env("MODELGATE_MODEL", "claude-opus-5-5")
+        .env("COMRADE_MODEL", "claude-opus-5-5")
         .args(["hook"])
         .write_stdin(payload.clone())
         .assert()
@@ -683,7 +680,7 @@ fn gemini_cli_write_file_is_denied_for_opus_and_allowed_for_haiku() {
     assert!(value["reason"].as_str().unwrap().starts_with(DENY_PREFIX));
 
     sb.cmd()
-        .env("MODELGATE_MODEL", "claude-haiku-5-5")
+        .env("COMRADE_MODEL", "claude-haiku-5-5")
         .args(["hook", "gemini-cli"])
         .write_stdin(payload)
         .assert()
@@ -703,7 +700,7 @@ fn windsurf_write_is_denied_in_windsurf_format() {
     .to_string();
     let output = sb
         .cmd()
-        .env("MODELGATE_MODEL", "claude-opus-5-5")
+        .env("COMRADE_MODEL", "claude-opus-5-5")
         .args(["hook"])
         .write_stdin(payload)
         .assert()

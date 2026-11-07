@@ -5,7 +5,7 @@
 //! 1. The built-in defaults (`src/default_config.toml`).
 //! 2. `<config dir>/config.toml`, the shared file you sync between computers.
 //! 3. `<config dir>/config.local.toml`, a per-machine override.
-//! 4. `.modelgate.toml` in the project root.
+//! 4. `.comrade.toml` in the project root.
 //!
 //! Scalar keys take the value from the highest layer that sets them. Rules
 //! merge by name: a rule in a higher layer overrides only the fields it sets.
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 pub use layers::{load, load_layers, Layer, LoadOptions};
 
-/// The built-in default config. `modelgate init` writes this text.
+/// The built-in default config. `comrade init` writes this text.
 pub const DEFAULT_CONFIG_TEXT: &str = include_str!("default_config.toml");
 
 /// What to do with an edit.
@@ -103,7 +103,7 @@ pub struct Config {
 
 /// Message used when a rule does not set one.
 pub const DEFAULT_RULE_MESSAGE: &str =
-    "Send this edit to a Haiku subagent. Model {model} may not edit {file}.";
+    "Comrade {model}, the Party does not type. Send a Haiku comrade (subagent) to edit {file}.";
 
 impl Config {
     /// Returns the config made from the built-in defaults only.

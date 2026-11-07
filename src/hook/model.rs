@@ -2,7 +2,7 @@
 //!
 //! polyhook does not carry the model name, so the lookup order is:
 //!
-//! 1. `MODELGATE_MODEL`, for every agent.
+//! 1. `COMRADE_MODEL`, for every agent.
 //! 2. The Claude Code session transcript, for Claude Code calls only. The
 //!    `transcript_path` comes from the raw payload. The subagent is taken from
 //!    polyhook's `agent_id`.
@@ -16,7 +16,7 @@ use crate::agents::claude_code::transcript;
 
 /// Returns the model that made the call, or `None` when it is unknown.
 ///
-/// `model_override` is the non-empty `MODELGATE_MODEL` value, if set.
+/// `model_override` is the non-empty `COMRADE_MODEL` value, if set.
 pub fn detect(input: &HookInput, model_override: Option<&str>) -> Option<String> {
     if let Some(model) = model_override {
         return Some(model.to_string());

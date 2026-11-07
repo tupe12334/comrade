@@ -35,7 +35,7 @@ const CALLER_ENV: &str = "POLYHOOK_CALLER";
 pub struct HookOptions {
     /// Config folder. `None` uses the default location.
     pub config_dir: Option<PathBuf>,
-    /// Model to use instead of detecting one. From `MODELGATE_MODEL`.
+    /// Model to use instead of detecting one. From `COMRADE_MODEL`.
     pub model_override: Option<String>,
 }
 
@@ -147,12 +147,12 @@ fn on_error_outcome(message: &str, options: &HookOptions) -> HookOutcome {
         Action::Allow => HookOutcome {
             exit_code: 0,
             stdout: String::new(),
-            stderr: format!("modelgate: {message}. Allowing the edit (on_error = \"allow\")."),
+            stderr: format!("comrade: {message}. Allowing the edit (on_error = \"allow\")."),
         },
         Action::Block => HookOutcome {
             exit_code: 2,
             stdout: String::new(),
-            stderr: format!("modelgate: {message}. Blocking the edit (on_error = \"block\")."),
+            stderr: format!("comrade: {message}. Blocking the edit (on_error = \"block\")."),
         },
     }
 }
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn unrelated_tool_is_allowed_without_reading_config() {
         let options = HookOptions {
-            config_dir: Some(PathBuf::from("/nonexistent/modelgate-test")),
+            config_dir: Some(PathBuf::from("/nonexistent/comrade-test")),
             model_override: None,
         };
         let outcome = run(
@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn non_tool_event_is_allowed_without_reading_config() {
         let options = HookOptions {
-            config_dir: Some(PathBuf::from("/nonexistent/modelgate-test")),
+            config_dir: Some(PathBuf::from("/nonexistent/comrade-test")),
             model_override: None,
         };
         let outcome = run(

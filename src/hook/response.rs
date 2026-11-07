@@ -1,7 +1,7 @@
 //! Builds the hook response through polyhook.
 //!
 //! polyhook writes each response in the format of the agent that `read`
-//! detected. modelgate only sends blocks. An allow prints nothing.
+//! detected. comrade only sends blocks. An allow prints nothing.
 
 use polyhook::HookResponse;
 
@@ -27,14 +27,14 @@ mod tests {
             br#"{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"/p/a.rs"}}"#,
         )
         .unwrap();
-        let text = block("Send this edit to a Haiku subagent.").unwrap();
+        let text = block("Send a Haiku comrade (subagent).").unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         let out = &value["hookSpecificOutput"];
         assert_eq!(out["hookEventName"], "PreToolUse");
         assert_eq!(out["permissionDecision"], "deny");
         assert_eq!(
             out["permissionDecisionReason"],
-            "Send this edit to a Haiku subagent."
+            "Send a Haiku comrade (subagent)."
         );
     }
 

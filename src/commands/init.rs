@@ -1,4 +1,4 @@
-//! `modelgate init`: writes the default config into the config folder.
+//! `comrade init`: writes the default config into the config folder.
 
 use std::path::Path;
 use std::process::Command;

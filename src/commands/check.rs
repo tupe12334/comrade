@@ -1,4 +1,4 @@
-//! `modelgate check`: validates every config layer and the merged config.
+//! `comrade check`: validates every config layer and the merged config.
 
 use crate::config::{self, validate, LoadOptions};
 use crate::error::Result;

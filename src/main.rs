@@ -1,5 +1,5 @@
-//! Command-line entry point. All logic lives in the `modelgate` library.
+//! Command-line entry point. All logic lives in the `comrade` library.
 
 fn main() {
-    std::process::exit(modelgate::cli::run(std::env::args_os()));
+    std::process::exit(comrade::cli::run(std::env::args_os()));
 }

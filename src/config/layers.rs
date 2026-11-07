@@ -10,7 +10,7 @@ use crate::paths::{CONFIG_FILE, LOCAL_CONFIG_FILE, PROJECT_FILE};
 
 /// Message used when the config does not set `unknown_model_message`.
 const FALLBACK_UNKNOWN_MODEL_MESSAGE: &str =
-    "Could not detect the model that edits {file}. Send this edit to a Haiku subagent.";
+    "Comrade, the Party could not tell who typed {file}. Send a Haiku comrade (subagent) to edit it.";
 
 /// One parsed config layer.
 #[derive(Debug, Clone)]
@@ -24,9 +24,9 @@ pub struct Layer {
 /// Where to look for config files.
 #[derive(Debug, Clone)]
 pub struct LoadOptions {
-    /// The config folder (`~/.config/modelgate` by default).
+    /// The config folder (`~/.config/comrade` by default).
     pub config_dir: PathBuf,
-    /// The project root. `.modelgate.toml` is read from here when set.
+    /// The project root. `.comrade.toml` is read from here when set.
     pub project_root: Option<PathBuf>,
 }
 

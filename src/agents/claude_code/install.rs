@@ -8,8 +8,8 @@ use crate::error::{Error, Result};
 
 /// The command Claude Code runs. It reads the hook input on stdin.
 ///
-/// Older entries use `modelgate hook claude`. The duplicate check matches both.
-pub const HOOK_COMMAND: &str = "modelgate hook";
+/// Older entries use `comrade hook claude`. The duplicate check matches both.
+pub const HOOK_COMMAND: &str = "comrade hook";
 
 /// Tools that the hook checks.
 pub const TOOL_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Bash";
@@ -66,12 +66,12 @@ pub fn settings_path() -> Result<PathBuf> {
 /// Adds the hook entry to the settings file at `path`.
 ///
 /// Keeps every other key and hook. Writes a backup first when the file exists.
-/// Does nothing when a modelgate entry is already present.
+/// Does nothing when a comrade entry is already present.
 pub fn write_settings(path: &Path) -> Result<WriteOutcome> {
     let existed = path.is_file();
     let mut settings = read_settings(path, existed)?;
 
-    if has_modelgate_entry(&settings) {
+    if has_comrade_entry(&settings) {
         return Ok(WriteOutcome::AlreadyInstalled {
             path: path.to_path_buf(),
         });
@@ -103,7 +103,7 @@ pub fn write_settings(path: &Path) -> Result<WriteOutcome> {
         message: e.to_string(),
     })?;
     text.push('\n');
-    let tmp = path.with_extension("json.modelgate-tmp");
+    let tmp = path.with_extension("json.comrade-tmp");
     std::fs::write(&tmp, text).map_err(|source| Error::Io {
         path: tmp.clone(),
         source,
@@ -143,7 +143,7 @@ fn read_settings(path: &Path, existed: bool) -> Result<Value> {
     Ok(value)
 }
 
-fn has_modelgate_entry(settings: &Value) -> bool {
+fn has_comrade_entry(settings: &Value) -> bool {
     settings
         .pointer("/hooks/PreToolUse")
         .and_then(Value::as_array)
@@ -201,7 +201,7 @@ fn backup_path(path: &Path) -> PathBuf {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(format!(".modelgate-backup-{stamp}"));
+    name.push(format!(".comrade-backup-{stamp}"));
     path.with_file_name(name)
 }
 
