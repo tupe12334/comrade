@@ -36,6 +36,10 @@ pub enum Error {
     #[error("invalid hook input: {0}")]
     HookInput(String),
 
+    /// The hook response could not be written in the agent format.
+    #[error("cannot build the hook response: {0}")]
+    HookOutput(String),
+
     /// The agent name given on the command line is not known.
     #[error("unknown agent `{0}`; known agents: claude")]
     UnknownAgent(String),
