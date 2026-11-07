@@ -1,0 +1,71 @@
+# modelgate config.
+#
+# This file lives in ~/.config/modelgate/config.toml. Sync the folder with git
+# to share it between computers. Do not put absolute paths or machine-specific
+# values here. Put those in config.local.toml, which git ignores.
+#
+# A project can override this config with a .modelgate.toml file in its root.
+
+# Turns the whole hook on or off.
+enabled = true
+
+# Action for files that no rule matches. "allow" or "block".
+default_action = "allow"
+
+# Action when the editing model cannot be detected. "allow" or "block".
+unknown_model = "block"
+
+# Message sent to the agent when the model is unknown.
+# Placeholders: {file}, {model}, {allowed}, {rule}.
+unknown_model_message = "Could not detect the model that edits {file}. Send this edit to a Haiku subagent."
+
+# Action when the hook itself fails, for example on bad input or a broken
+# config. "allow" keeps a broken config from locking you out.
+on_error = "allow"
+
+# Rules. The first enabled rule whose files match decides the edit.
+#
+# name            Required. Identifies the rule across config layers.
+# enabled         Optional. Default true.
+# files           Required. Glob patterns. A pattern without "/" matches the
+#                 file name. A pattern with "/" matches the path from the
+#                 project root.
+# allowed_models  Required. Model patterns. A pattern with * or ? is a glob.
+#                 Any other pattern is a substring. Both ignore case.
+# message         Optional. Placeholders: {file}, {model}, {allowed}, {rule}.
+#
+# A rule with the same name in a higher layer overrides only the fields it sets.
+
+[[rule]]
+name = "source-code"
+enabled = true
+files = [
+    "*.rs",
+    "*.ts",
+    "*.tsx",
+    "*.js",
+    "*.jsx",
+    "*.py",
+    "*.go",
+    "*.java",
+    "*.kt",
+    "*.swift",
+    "*.c",
+    "*.cpp",
+    "*.h",
+    "*.cs",
+    "*.rb",
+    "*.php",
+    "*.scala",
+    "*.sh",
+]
+allowed_models = ["*haiku*"]
+message = "Send this edit to a Haiku subagent. Model {model} may not edit {file}."
+
+# Example, not active. Uncomment and change to add your own rule.
+#
+# [[rule]]
+# name = "docs-opus-only"
+# files = ["docs/**/*.md"]
+# allowed_models = ["*opus*"]
+# message = "Send this docs edit to an Opus subagent. Model {model} may not edit {file}."
