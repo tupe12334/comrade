@@ -8,7 +8,6 @@
 //! - Block: JSON on stdout with `permissionDecision: "deny"`. See [`output`].
 //! - Settings: [`install`] writes the hook entry into `settings.json`.
 
-pub mod bash_writes;
 pub mod input;
 pub mod install;
 pub mod output;

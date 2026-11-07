@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::bash_writes;
 use crate::agents::{EditRequest, SessionRef};
 use crate::error::{Error, Result};
+use crate::hook::shell_writes;
 
 /// Tools that write a file named by `tool_input.file_path`.
 const FILE_TOOLS: &[&str] = &["Edit", "Write", "MultiEdit"];
@@ -61,7 +61,7 @@ pub fn parse(stdin: &str) -> Result<Option<EditRequest>> {
         vec![string_field(tool_input, "notebook_path")?]
     } else if tool == "Bash" {
         let command = string_field(tool_input, "command")?;
-        bash_writes::write_targets(&command)
+        shell_writes::write_targets(&command)
     } else {
         Vec::new()
     };

@@ -11,6 +11,8 @@ use crate::error::Result;
 use crate::paths;
 use crate::rules::{Engine, Verdict};
 
+pub mod shell_writes;
+
 /// Options that come from the command line and the environment.
 #[derive(Debug, Clone, Default)]
 pub struct HookOptions {
