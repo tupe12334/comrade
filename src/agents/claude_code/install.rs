@@ -7,7 +7,9 @@ use serde_json::{json, Map, Value};
 use crate::error::{Error, Result};
 
 /// The command Claude Code runs. It reads the hook input on stdin.
-pub const HOOK_COMMAND: &str = "modelgate hook claude";
+///
+/// Older entries use `modelgate hook claude`. The duplicate check matches both.
+pub const HOOK_COMMAND: &str = "modelgate hook";
 
 /// Tools that the hook checks.
 pub const TOOL_MATCHER: &str = "Edit|Write|MultiEdit|NotebookEdit|Bash";

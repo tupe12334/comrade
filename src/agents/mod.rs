@@ -20,6 +20,16 @@ pub struct AgentInfo {
     pub docs: &'static str,
 }
 
+/// Returns the agent for a name. `claude` is an alias for `claude-code`.
+pub fn find(name: &str) -> Option<&'static AgentInfo> {
+    let slug = if name == "claude" {
+        "claude-code"
+    } else {
+        name
+    };
+    POLYHOOK_AGENTS.iter().find(|agent| agent.name == slug)
+}
+
 /// Agents that polyhook supports, from polyhook's `tools.toml` and README.
 pub const POLYHOOK_AGENTS: &[AgentInfo] = &[
     AgentInfo {

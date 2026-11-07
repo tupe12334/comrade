@@ -40,6 +40,10 @@ pub enum Error {
     #[error("cannot build the hook response: {0}")]
     HookOutput(String),
 
+    /// `install --write` only edits Claude Code settings.
+    #[error("`install --write` only supports Claude Code. Add the hook for `{0}` by hand; see the Supported agents section of the README")]
+    WriteNotSupported(String),
+
     /// The agent name given on the command line is not known.
     #[error("unknown agent `{0}`. See the Supported agents section of the README")]
     UnknownAgent(String),

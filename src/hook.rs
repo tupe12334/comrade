@@ -66,19 +66,9 @@ impl HookOutcome {
 /// is an override. It is ignored when `POLYHOOK_CALLER` is already set.
 /// `claude` is an alias for `claude-code`.
 pub fn use_agent_hint(name: &str) -> Result<()> {
-    let slug = if name == "claude" {
-        "claude-code"
-    } else {
-        name
-    };
-    if !agents::POLYHOOK_AGENTS
-        .iter()
-        .any(|agent| agent.name == slug)
-    {
-        return Err(Error::UnknownAgent(name.to_string()));
-    }
+    let agent = agents::find(name).ok_or_else(|| Error::UnknownAgent(name.to_string()))?;
     if std::env::var_os(CALLER_ENV).is_none() {
-        std::env::set_var(CALLER_ENV, slug);
+        std::env::set_var(CALLER_ENV, agent.name);
     }
     Ok(())
 }

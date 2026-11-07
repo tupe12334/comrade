@@ -409,8 +409,42 @@ fn install_prints_snippet_without_touching_settings() {
         .assert()
         .success()
         .stdout(predicate::str::contains("PreToolUse"))
-        .stdout(predicate::str::contains("modelgate hook claude"));
+        .stdout(predicate::str::contains("modelgate hook"));
     assert!(!sb.home.join(".claude").exists());
+}
+
+#[test]
+fn install_other_agent_prints_manual_steps_and_writes_nothing() {
+    let sb = Sandbox::new();
+    sb.cmd()
+        .args(["install", "cursor"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("modelgate hook"))
+        .stdout(predicate::str::contains("BeforeToolCall"))
+        .stdout(predicate::str::contains("https://cursor.com/docs/hooks"));
+    assert!(!sb.home.join(".cursor").exists());
+}
+
+#[test]
+fn install_write_is_claude_only() {
+    let sb = Sandbox::new();
+    sb.cmd()
+        .args(["install", "cursor", "--write"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("only supports Claude Code"));
+    assert!(!sb.home.join(".cursor").exists());
+}
+
+#[test]
+fn install_unknown_agent_is_an_error() {
+    let sb = Sandbox::new();
+    sb.cmd()
+        .args(["install", "nope"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("unknown agent"));
 }
 
 #[test]
@@ -433,7 +467,7 @@ fn install_write_merges_keeps_hooks_and_is_idempotent() {
 
     let text = std::fs::read_to_string(&settings).unwrap();
     assert!(text.contains("keep-me"));
-    assert!(text.contains("modelgate hook claude"));
+    assert!(text.contains("modelgate hook"));
     assert!(text.contains("\"theme\": \"dark\""));
     let backups = std::fs::read_dir(&settings_dir)
         .unwrap()
@@ -448,6 +482,22 @@ fn install_write_merges_keeps_hooks_and_is_idempotent() {
         .success()
         .stdout(predicate::str::contains("already in"));
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), text);
+}
+
+#[test]
+fn hook_without_agent_argument_detects_claude() {
+    let sb = Sandbox::new();
+    let transcript = sb.transcript("claude-opus-5-5");
+    let output = sb
+        .cmd()
+        .args(["hook"])
+        .write_stdin(sb.edit_input(&transcript, "src/lib.rs", None))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let reason = deny_reason(&output.stdout);
+    assert!(reason.contains("claude-opus-5-5"), "{reason}");
 }
 
 #[test]
