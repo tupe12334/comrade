@@ -29,3 +29,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Claude Code `PreToolUse` hook for `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, and simple Bash file writes.
 - Model detection from the session transcript and from subagent transcripts.
 - `on_error` and `unknown_model` policies.
+
+### Fixed
+
+- Subagent model falls back to `agent-<agent_id>.meta.json` when the subagent transcript is not flushed yet.
