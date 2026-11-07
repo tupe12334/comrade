@@ -40,7 +40,14 @@ impl Sandbox {
             .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env_remove("MODELGATE_MODEL")
-            .env_remove("CLAUDE_CONFIG_DIR");
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("POLYHOOK_CALLER")
+            .env_remove("CLAUDE_CODE_VERSION")
+            .env_remove("CURSOR_SESSION_ID")
+            .env_remove("WINDSURF_SESSION_ID")
+            .env_remove("CLINE_SESSION_ID")
+            .env_remove("AMP_SESSION_ID")
+            .env_remove("GEMINI_PROJECT_DIR");
         cmd
     }
 
@@ -509,4 +516,223 @@ fn unknown_agent_is_an_error() {
         .assert()
         .code(1)
         .stderr(predicate::str::contains("unknown agent"));
+}
+
+// ---------------------------------------------------------------------------
+// Other polyhook agents. Payload shapes follow the samples in polyhook's
+// core/tests/fixtures (cursor-before-tool, gemini-cli-before-tool,
+// windsurf-pre-tool).
+// ---------------------------------------------------------------------------
+
+const DENY_PREFIX: &str = "Send this edit to a Haiku subagent.";
+
+fn cursor_edit(sb: &Sandbox, file: &str) -> String {
+    json!({
+        "type": "BeforeToolCall",
+        "toolCall": {
+            "name": "edit_file",
+            "args": { "path": sb.project.join(file) }
+        },
+        "sessionId": "sess_cursor"
+    })
+    .to_string()
+}
+
+#[test]
+fn cursor_opus_edit_is_denied_in_cursor_format() {
+    let sb = Sandbox::new();
+    let output = sb
+        .cmd()
+        .env("MODELGATE_MODEL", "claude-opus-5-5")
+        .args(["hook"])
+        .write_stdin(cursor_edit(&sb, "src/lib.rs"))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["action"], "deny");
+    let message = value["message"].as_str().unwrap();
+    assert!(message.starts_with(DENY_PREFIX), "{message}");
+    assert!(message.contains("claude-opus-5-5"), "{message}");
+}
+
+#[test]
+fn cursor_haiku_edit_is_allowed_with_no_output() {
+    let sb = Sandbox::new();
+    sb.cmd()
+        .env("MODELGATE_MODEL", "claude-haiku-5-5")
+        .args(["hook"])
+        .write_stdin(cursor_edit(&sb, "src/lib.rs"))
+        .assert()
+        .success()
+        .stdout("");
+}
+
+#[test]
+fn cursor_edit_without_model_is_blocked_as_unknown() {
+    let sb = Sandbox::new();
+    let output = sb
+        .cmd()
+        .args(["hook"])
+        .write_stdin(cursor_edit(&sb, "src/lib.rs"))
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["action"], "deny");
+    assert!(
+        value["message"]
+            .as_str()
+            .unwrap()
+            .contains("Could not detect the model"),
+        "{value}"
+    );
+}
+
+#[test]
+fn cursor_payload_transcript_is_not_read_for_the_model() {
+    // Only Claude Code has a transcript fallback. An Opus transcript next to
+    // a Cursor payload must not make the model known.
+    let sb = Sandbox::new();
+    let transcript = sb.transcript("claude-haiku-5-5");
+    let payload = json!({
+        "type": "BeforeToolCall",
+        "toolCall": { "name": "edit_file", "args": { "path": sb.project.join("src/lib.rs") } },
+        "sessionId": "sess_cursor",
+        "transcript_path": transcript
+    })
+    .to_string();
+    let output = sb
+        .cmd()
+        .args(["hook"])
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["action"], "deny");
+}
+
+#[test]
+fn cursor_shell_redirect_into_rust_file_is_denied() {
+    let sb = Sandbox::new();
+    let payload = json!({
+        "type": "BeforeToolCall",
+        "toolCall": { "name": "run_terminal_cmd", "args": { "command": "echo fn > src/main.rs" } },
+        "sessionId": "sess_cursor"
+    })
+    .to_string();
+    let output = sb
+        .cmd()
+        .env("MODELGATE_MODEL", "claude-opus-5-5")
+        .args(["hook"])
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["action"], "deny");
+}
+
+#[test]
+fn cursor_after_tool_event_is_allowed() {
+    let sb = Sandbox::new();
+    let payload = json!({
+        "type": "AfterToolCall",
+        "toolCall": { "name": "edit_file", "args": { "path": sb.project.join("src/lib.rs") } },
+        "sessionId": "sess_cursor"
+    })
+    .to_string();
+    sb.cmd()
+        .env("MODELGATE_MODEL", "claude-opus-5-5")
+        .args(["hook"])
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .stdout("");
+}
+
+#[test]
+fn gemini_cli_write_file_is_denied_for_opus_and_allowed_for_haiku() {
+    let sb = Sandbox::new();
+    let payload = json!({
+        "hook_event_name": "BeforeTool",
+        "tool_name": "write_file",
+        "tool_input": { "file_path": sb.project.join("src/main.rs") },
+        "session_id": "sess_gemini",
+        "cwd": sb.project,
+        "transcript_path": "/nonexistent/gemini.json"
+    })
+    .to_string();
+
+    let output = sb
+        .cmd()
+        .env("MODELGATE_MODEL", "claude-opus-5-5")
+        .args(["hook"])
+        .write_stdin(payload.clone())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["decision"], "deny");
+    assert!(value["reason"].as_str().unwrap().starts_with(DENY_PREFIX));
+
+    sb.cmd()
+        .env("MODELGATE_MODEL", "claude-haiku-5-5")
+        .args(["hook", "gemini-cli"])
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .stdout("");
+}
+
+#[test]
+fn windsurf_write_is_denied_in_windsurf_format() {
+    let sb = Sandbox::new();
+    let payload = json!({
+        "event": "pre_tool",
+        "tool": "write_file",
+        "parameters": { "path": sb.project.join("src/lib.rs") },
+        "session": "sess_windsurf"
+    })
+    .to_string();
+    let output = sb
+        .cmd()
+        .env("MODELGATE_MODEL", "claude-opus-5-5")
+        .args(["hook"])
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["allow"], false);
+    assert!(value["reason"].as_str().unwrap().starts_with(DENY_PREFIX));
+}
+
+#[test]
+fn markdown_edit_is_allowed_for_cursor_without_model() {
+    let sb = Sandbox::new();
+    sb.cmd()
+        .args(["hook"])
+        .write_stdin(cursor_edit(&sb, "docs/readme.md"))
+        .assert()
+        .success()
+        .stdout("");
+}
+
+#[test]
+fn unknown_hook_agent_name_is_rejected_before_reading_input() {
+    let sb = Sandbox::new();
+    sb.cmd()
+        .args(["hook", "nope"])
+        .write_stdin("{}")
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("unknown agent `nope`"));
 }
