@@ -9,19 +9,21 @@
 //!   at `<session-dir>/subagents/agent-<agent_id>.jsonl`, next to the session
 //!   file. The model is the last assistant line in that file.
 //!
-//! If the subagent file is missing, the model is unknown. The main session
-//! model is not used, because it would be the wrong model.
+//! If the subagent file has no model yet, `agent-<agent_id>.meta.json` gives the model.
+//! The main session model is not used, because it would be the wrong model.
 
 use std::path::{Path, PathBuf};
 
 /// Returns the model that made the latest tool call, or `None` if unknown.
 pub fn detect(transcript: &Path, agent_id: Option<&str>) -> Option<String> {
-    let (path, is_subagent) = match agent_id {
-        Some(id) => (subagent_transcript(transcript, id), true),
-        None => (transcript.to_path_buf(), false),
+    let Some(id) = agent_id else {
+        let text = std::fs::read_to_string(transcript).ok()?;
+        return last_model(&text, false);
     };
-    let text = std::fs::read_to_string(path).ok()?;
-    last_model(&text, is_subagent)
+    let from_transcript = std::fs::read_to_string(subagent_transcript(transcript, id))
+        .ok()
+        .and_then(|text| last_model(&text, true));
+    from_transcript.or_else(|| meta_model(&subagent_meta(transcript, id)))
 }
 
 /// Returns the subagent transcript path for a session transcript and agent id.
@@ -30,6 +32,28 @@ pub fn subagent_transcript(session_transcript: &Path, agent_id: &str) -> PathBuf
     session_dir
         .join("subagents")
         .join(format!("agent-{agent_id}.jsonl"))
+}
+
+/// Returns the subagent meta path for a session transcript and agent id.
+pub fn subagent_meta(session_transcript: &Path, agent_id: &str) -> PathBuf {
+    let session_dir = session_transcript.with_extension("");
+    session_dir
+        .join("subagents")
+        .join(format!("agent-{agent_id}.meta.json"))
+}
+
+/// Returns the top-level `model` of a subagent meta file, or `None` if unusable.
+///
+/// `inherit` means the subagent uses the parent model, so it is not a model name.
+fn meta_model(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let model = value.get("model")?.as_str()?.trim();
+    if model.is_empty() || model.eq_ignore_ascii_case("inherit") {
+        None
+    } else {
+        Some(model.to_string())
+    }
 }
 
 /// Returns the model of the last usable assistant line in JSONL `text`.
@@ -126,5 +150,61 @@ not json at all
     #[test]
     fn detect_missing_file_is_unknown() {
         assert_eq!(detect(Path::new("/nonexistent/x.jsonl"), None), None);
+    }
+
+    /// Returns a session path whose `subagents` folder exists in a unique temp dir.
+    fn temp_session(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("comrade-transcript-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sess").join("subagents")).unwrap();
+        dir.join("sess.jsonl")
+    }
+
+    #[test]
+    fn subagent_without_assistant_line_uses_meta_model() {
+        let session = temp_session("meta-fallback");
+        let sub_dir = session.with_extension("").join("subagents");
+        std::fs::write(
+            sub_dir.join("agent-a1.jsonl"),
+            r#"{"type":"user","message":{"role":"user","content":"x"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sub_dir.join("agent-a1.meta.json"),
+            r#"{"agentType":"general-purpose","model":"haiku","pickedEffortModel":"claude-opus-5-5"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(detect(&session, Some("a1")).as_deref(), Some("haiku"));
+        let _ = std::fs::remove_dir_all(session.parent().unwrap());
+    }
+
+    #[test]
+    fn transcript_model_wins_over_meta_model() {
+        let session = temp_session("transcript-wins");
+        let sub_dir = session.with_extension("").join("subagents");
+        std::fs::write(
+            sub_dir.join("agent-a1.jsonl"),
+            r#"{"type":"assistant","isSidechain":true,"message":{"model":"claude-haiku-5-5"}}"#,
+        )
+        .unwrap();
+        std::fs::write(sub_dir.join("agent-a1.meta.json"), r#"{"model":"sonnet"}"#).unwrap();
+
+        assert_eq!(
+            detect(&session, Some("a1")).as_deref(),
+            Some("claude-haiku-5-5")
+        );
+        let _ = std::fs::remove_dir_all(session.parent().unwrap());
+    }
+
+    #[test]
+    fn inherit_meta_model_is_unknown() {
+        let session = temp_session("meta-inherit");
+        let sub_dir = session.with_extension("").join("subagents");
+        std::fs::write(sub_dir.join("agent-a1.meta.json"), r#"{"model":"inherit"}"#).unwrap();
+
+        assert_eq!(detect(&session, Some("a1")), None);
+        let _ = std::fs::remove_dir_all(session.parent().unwrap());
     }
 }
