@@ -2,7 +2,7 @@
 name = "comrade"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 authors = ["Ofek Gabay"]
 description = "Block code edits from AI agents unless the editing model is allowed for that file type"
 license = "MIT OR Apache-2.0"
@@ -27,12 +27,14 @@ name = "comrade"
 path = "src/main.rs"
 
 [dependencies]
+brush-parser = "0.4.0"
 clap = { version = "4.6.7", features = ["derive"] }
 etcetera = "0.11.0"
 globset = "0.4.21"
 polyhook = "0.2.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
+shlex = "2.0.1"
 thiserror = "2.0.21"
 toml = "1.2.1"
 
