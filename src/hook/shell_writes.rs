@@ -1,8 +1,10 @@
-//! Finds the files that a simple Bash command writes to.
+//! Finds the files that a Bash command writes to.
 //!
-//! This is a best-effort scan, not a shell parser. It detects:
+//! The command is parsed with `brush-parser`, then every simple command is
+//! walked, including commands inside compound commands, functions and
+//! process substitutions. It detects:
 //!
-//! - output redirects: `>`, `>>`, `>|`, `&>`, `&>>` (not `2>&1` or `>/dev/null`)
+//! - output redirects: `>`, `>>`, `>|`, `<>`, `&>`, `&>>` (not `2>&1` or `>/dev/null`)
 //! - `tee [-a] FILE...`
 //! - `sed -i[SUFFIX] ... FILE...` (also `sed -i '' ...` on macOS)
 //! - `cp` and `mv`, where the last operand is the target
@@ -10,37 +12,25 @@
 //!
 //! Not detected: `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`,
 //! `git apply`, and commands run through `eval` or `$(...)`. Heredoc bodies are
-//! skipped, so text inside them does not count as a write.
+//! not words, so text inside them does not count as a write.
+
+use brush_parser::ast::{
+    AndOr, AndOrList, Command, CommandPrefixOrSuffixItem, CompoundCommand, CompoundList,
+    CompoundListItem, FunctionBody, IoFileRedirectKind, IoFileRedirectTarget, IoRedirect, Pipeline,
+    Program, RedirectList, SimpleCommand, Word,
+};
 
 /// Returns the file names that `command` writes to. Names are not resolved.
 pub fn write_targets(command: &str) -> Vec<String> {
-    let text = strip_heredoc_bodies(command);
-    let tokens = tokenize(&text);
-
     let mut targets = Vec::new();
-    let mut args: Vec<String> = Vec::new();
-    let mut pending = Pending::None;
-
-    for token in tokens {
-        match token {
-            Token::Separator => {
-                analyze(&args, &mut targets);
-                args.clear();
-                pending = Pending::None;
-            }
-            Token::Word(word) => match pending {
-                Pending::Target => {
-                    targets.push(word);
-                    pending = Pending::None;
-                }
-                Pending::Skip => pending = Pending::None,
-                Pending::None => args.push(word),
-            },
-            Token::Redirect => pending = Pending::Target,
-            Token::Input | Token::Dup => pending = Pending::Skip,
-        }
+    let mut parser = brush_parser::Parser::new(
+        std::io::BufReader::new(command.as_bytes()),
+        &brush_parser::ParserOptions::default(),
+    );
+    match parser.parse_program() {
+        Ok(program) => walk_program(&program, &mut targets),
+        Err(_) => fallback_targets(command, &mut targets),
     }
-    analyze(&args, &mut targets);
 
     targets.retain(|t| !t.is_empty() && !t.starts_with("/dev/"));
     let mut unique = Vec::new();
@@ -52,173 +42,206 @@ pub fn write_targets(command: &str) -> Vec<String> {
     unique
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pending {
-    None,
-    /// The next word is a write target.
-    Target,
-    /// The next word is not a file (for example an fd number or an input).
-    Skip,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Token {
-    Word(String),
-    /// An output redirect such as `>` or `>>`.
-    Redirect,
-    /// An input redirect such as `<`.
-    Input,
-    /// A file descriptor duplication such as `>&`.
-    Dup,
-    /// A command separator such as `;`, `&&`, `|` or a newline.
-    Separator,
-}
-
-/// Removes the body lines of heredocs, keeping the lines that start them.
-fn strip_heredoc_bodies(command: &str) -> String {
-    let mut out = String::with_capacity(command.len());
-    let mut delimiter: Option<String> = None;
-    for line in command.lines() {
-        if let Some(end) = &delimiter {
-            if line.trim() == end {
-                delimiter = None;
+/// Used when the parser rejects the input. Takes the word after each `>`.
+/// Quoted text can match here, which is a false positive but errs on the safe side.
+fn fallback_targets(command: &str, out: &mut Vec<String>) {
+    let spaced = command
+        .replace(">>", " > ")
+        .replace(">|", " > ")
+        .replace('>', " > ");
+    let mut words = spaced.split_whitespace();
+    while let Some(word) = words.next() {
+        if word == ">" {
+            if let Some(target) = words.next().filter(|t| !t.starts_with('&')) {
+                out.push(target.to_string());
             }
+        }
+    }
+}
+
+fn walk_program(program: &Program, out: &mut Vec<String>) {
+    for complete in &program.complete_commands {
+        walk_list(complete, out);
+    }
+}
+
+fn walk_list(list: &CompoundList, out: &mut Vec<String>) {
+    for CompoundListItem(and_or, _) in &list.0 {
+        walk_and_or(and_or, out);
+    }
+}
+
+fn walk_and_or(list: &AndOrList, out: &mut Vec<String>) {
+    walk_pipeline(&list.first, out);
+    for item in &list.additional {
+        match item {
+            AndOr::And(pipeline) | AndOr::Or(pipeline) => walk_pipeline(pipeline, out),
+        }
+    }
+}
+
+fn walk_pipeline(pipeline: &Pipeline, out: &mut Vec<String>) {
+    for command in &pipeline.seq {
+        walk_command(command, out);
+    }
+}
+
+fn walk_command(command: &Command, out: &mut Vec<String>) {
+    match command {
+        Command::Simple(simple) => walk_simple(simple, out),
+        Command::Compound(compound, redirects) => {
+            walk_compound(compound, out);
+            walk_redirects(redirects.as_ref(), out);
+        }
+        Command::Function(definition) => {
+            let FunctionBody(compound, redirects) = &definition.body;
+            walk_compound(compound, out);
+            walk_redirects(redirects.as_ref(), out);
+        }
+        Command::ExtendedTest(_, redirects) => walk_redirects(redirects.as_ref(), out),
+    }
+}
+
+fn walk_compound(compound: &CompoundCommand, out: &mut Vec<String>) {
+    match compound {
+        CompoundCommand::Arithmetic(_) => {}
+        CompoundCommand::ArithmeticForClause(c) => walk_list(&c.body.list, out),
+        CompoundCommand::BraceGroup(b) => walk_list(&b.list, out),
+        CompoundCommand::Subshell(s) => walk_list(&s.list, out),
+        CompoundCommand::ForClause(f) => walk_list(&f.body.list, out),
+        CompoundCommand::CaseClause(c) => {
+            for case in &c.cases {
+                if let Some(list) = &case.cmd {
+                    walk_list(list, out);
+                }
+            }
+        }
+        CompoundCommand::IfClause(c) => {
+            walk_list(&c.condition, out);
+            walk_list(&c.then, out);
+            for clause in c.elses.iter().flatten() {
+                if let Some(condition) = &clause.condition {
+                    walk_list(condition, out);
+                }
+                walk_list(&clause.body, out);
+            }
+        }
+        CompoundCommand::WhileClause(w) | CompoundCommand::UntilClause(w) => {
+            walk_list(&w.0, out);
+            walk_list(&w.1.list, out);
+        }
+        CompoundCommand::Coprocess(c) => walk_command(&c.body, out),
+    }
+}
+
+fn walk_simple(simple: &SimpleCommand, out: &mut Vec<String>) {
+    // Prefix assignments such as `FOO=1 tee x` are not argv words.
+    if let Some(prefix) = &simple.prefix {
+        for item in &prefix.0 {
+            walk_item(item, out);
+        }
+    }
+    let mut argv = Vec::new();
+    if let Some(word) = &simple.word_or_name {
+        argv.push(unquote(&word.value));
+    }
+    if let Some(suffix) = &simple.suffix {
+        for item in &suffix.0 {
+            if let Some(word) = walk_item(item, out) {
+                argv.push(unquote(&word.value));
+            }
+        }
+    }
+    analyze(&argv, out);
+}
+
+/// Handles redirects and process substitutions. Returns the word for argv items.
+fn walk_item<'a>(item: &'a CommandPrefixOrSuffixItem, out: &mut Vec<String>) -> Option<&'a Word> {
+    match item {
+        CommandPrefixOrSuffixItem::IoRedirect(redirect) => {
+            walk_redirect(redirect, out);
+            None
+        }
+        CommandPrefixOrSuffixItem::ProcessSubstitution(_, sub) => {
+            walk_list(&sub.list, out);
+            None
+        }
+        CommandPrefixOrSuffixItem::Word(word)
+        | CommandPrefixOrSuffixItem::AssignmentWord(_, word) => Some(word),
+    }
+}
+
+fn walk_redirects(redirects: Option<&RedirectList>, out: &mut Vec<String>) {
+    if let Some(RedirectList(items)) = redirects {
+        for redirect in items {
+            walk_redirect(redirect, out);
+        }
+    }
+}
+
+fn walk_redirect(redirect: &IoRedirect, out: &mut Vec<String>) {
+    match redirect {
+        IoRedirect::File(_, kind, IoFileRedirectTarget::Filename(word)) if is_write(kind) => {
+            out.push(unquote(&word.value));
+        }
+        IoRedirect::File(_, _, IoFileRedirectTarget::ProcessSubstitution(_, sub)) => {
+            walk_list(&sub.list, out);
+        }
+        IoRedirect::OutputAndError(word, _) => out.push(unquote(&word.value)),
+        _ => {}
+    }
+}
+
+fn is_write(kind: &IoFileRedirectKind) -> bool {
+    matches!(
+        kind,
+        IoFileRedirectKind::Write
+            | IoFileRedirectKind::Append
+            | IoFileRedirectKind::Clobber
+            | IoFileRedirectKind::ReadAndWrite
+    )
+}
+
+/// Removes shell quoting from one word. Falls back to the raw text.
+fn unquote(raw: &str) -> String {
+    if let Some(rest) = raw.strip_prefix("$'") {
+        // ANSI-C quoting: find the closing quote, skipping escaped characters.
+        let mut escaped = false;
+        for (i, c) in rest.char_indices() {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '\'' {
+                return ansi_c(&rest[..i]) + &unquote(&rest[i + 1..]);
+            }
+        }
+        return raw.to_string();
+    }
+    match shlex::split(raw) {
+        Some(mut parts) if parts.len() == 1 => parts.remove(0),
+        _ => raw.to_string(),
+    }
+}
+
+/// Decodes the body of a `$'...'` string. Unknown escapes keep the character.
+fn ansi_c(body: &str) -> String {
+    let mut out = String::new();
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
             continue;
         }
-        out.push_str(line);
-        out.push('\n');
-        delimiter = heredoc_delimiter(line);
-    }
-    out
-}
-
-fn heredoc_delimiter(line: &str) -> Option<String> {
-    let index = line.find("<<")?;
-    let rest = &line[index + 2..];
-    if rest.starts_with('<') {
-        return None; // here-string, not a heredoc
-    }
-    let rest = rest.trim_start_matches('-').trim_start();
-    let word: String = rest
-        .chars()
-        .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '|' | '&' | ')'))
-        .collect();
-    let word = word.trim_matches(|c| c == '\'' || c == '"');
-    if word.is_empty() {
-        None
-    } else {
-        Some(word.to_string())
-    }
-}
-
-fn tokenize(text: &str) -> Vec<Token> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut tokens = Vec::new();
-    let mut word: Option<String> = None;
-    let mut i = 0;
-
-    while i < chars.len() {
-        let c = chars[i];
-        match c {
-            '\'' => {
-                let buffer = word.get_or_insert_with(String::new);
-                i += 1;
-                while i < chars.len() && chars[i] != '\'' {
-                    buffer.push(chars[i]);
-                    i += 1;
-                }
-                i += 1;
-            }
-            '"' => {
-                let buffer = word.get_or_insert_with(String::new);
-                i += 1;
-                while i < chars.len() && chars[i] != '"' {
-                    if chars[i] == '\\'
-                        && i + 1 < chars.len()
-                        && matches!(chars[i + 1], '"' | '\\' | '$' | '`')
-                    {
-                        buffer.push(chars[i + 1]);
-                        i += 2;
-                    } else {
-                        buffer.push(chars[i]);
-                        i += 1;
-                    }
-                }
-                i += 1;
-            }
-            '\\' => {
-                if i + 1 < chars.len() {
-                    word.get_or_insert_with(String::new).push(chars[i + 1]);
-                }
-                i += 2;
-            }
-            ' ' | '\t' | '\r' => {
-                flush(&mut word, &mut tokens);
-                i += 1;
-            }
-            '\n' | ';' | '|' | '(' | ')' => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Separator);
-                i += 1;
-            }
-            '&' if chars.get(i + 1) == Some(&'>') => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Redirect);
-                i += 2;
-                if chars.get(i) == Some(&'>') {
-                    i += 1;
-                }
-            }
-            '&' => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Separator);
-                i += 1;
-            }
-            '>' => {
-                // A digit word right before `>` is a file descriptor, such as `2>`.
-                let fd_prefix = word
-                    .as_deref()
-                    .is_some_and(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_digit()));
-                if fd_prefix {
-                    word = None;
-                } else {
-                    flush(&mut word, &mut tokens);
-                }
-                i += 1;
-                if chars.get(i) == Some(&'>') || chars.get(i) == Some(&'|') {
-                    i += 1;
-                }
-                if chars.get(i) == Some(&'&') {
-                    i += 1;
-                    tokens.push(Token::Dup);
-                } else {
-                    tokens.push(Token::Redirect);
-                }
-            }
-            '<' => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Input);
-                while chars.get(i) == Some(&'<') {
-                    i += 1;
-                }
-                if matches!(chars.get(i), Some('&') | Some('>')) {
-                    i += 1;
-                }
-            }
-            _ => {
-                word.get_or_insert_with(String::new).push(c);
-                i += 1;
-            }
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('r') => out.push('\r'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
         }
     }
-    flush(&mut word, &mut tokens);
-    tokens
-}
-
-fn flush(word: &mut Option<String>, tokens: &mut Vec<Token>) {
-    if let Some(w) = word.take() {
-        tokens.push(Token::Word(w));
-    }
+    out
 }
 
 /// Looks at one simple command and adds the files it writes to.
@@ -369,5 +392,43 @@ mod tests {
     fn plain_commands_write_nothing() {
         assert!(targets("ls -la").is_empty());
         assert!(targets("cargo test").is_empty());
+    }
+
+    #[test]
+    fn quoted_angle_bracket_does_not_hide_later_write() {
+        assert_eq!(
+            targets("echo \"a<<X\"\necho hi > src/main.rs"),
+            vec!["src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn ansi_c_quoted_target_is_unquoted() {
+        assert_eq!(targets("echo $'it\\'s' > src/main.rs"), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn multiple_heredocs_on_one_line() {
+        assert_eq!(
+            targets("cat <<A <<B\na\nA\nb > nope.rs\nB\necho > real.rs"),
+            vec!["real.rs"]
+        );
+    }
+
+    #[test]
+    fn read_write_fd_open_is_a_write() {
+        assert_eq!(targets("exec 3<>src/main.rs"), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn writes_inside_compound_commands_are_found() {
+        assert_eq!(targets("if true; then echo a > x.rs; fi"), vec!["x.rs"]);
+        assert_eq!(targets("for i in 1; do echo $i; done > y.rs"), vec!["y.rs"]);
+        assert_eq!(targets("f() { echo a > z.rs; }; f"), vec!["z.rs"]);
+    }
+
+    #[test]
+    fn parse_error_falls_back_to_whitespace_scan() {
+        assert_eq!(targets("echo a > b.rs ) )"), vec!["b.rs"]);
     }
 }
