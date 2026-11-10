@@ -33,3 +33,13 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets
+
+  linecheck:
+    name: linecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: tupe12334/linecheck@v1.2.2
+        with:
+          version: "1.2.2"

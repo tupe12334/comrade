@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/tupe12334/linecheck/main/schema/linecheck.schema.json
+
+# Warn thresholds follow the linecheck --default preset (200 / 400).
+# Error thresholds sit above today's largest files so CI does not block on day one.
+# Ratchet the error values down as tests/cli.rs and src/rules.rs get split.
+rules:
+  - pattern: "tests/**/*.rs"
+    warn: 400
+    error: 800
+    warn_message: "Integration test file is getting long; split by command or scenario"
+  - pattern: "**/*.rs"
+    warn: 200
+    error: 600
+    warn_message: "Getting long; consider splitting into submodules"
+    error_message: "Too large to review easily; split this file now"
+
+exclude:
+  - "target/**"
+  - "Cargo.lock"
+  - "LICENSE-*"
+  - "**/*.md"
