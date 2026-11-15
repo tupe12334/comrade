@@ -24,6 +24,7 @@ use crate::rules::{Engine, Verdict};
 pub mod input;
 pub mod model;
 pub mod response;
+mod shell_fallback;
 pub mod shell_writes;
 pub mod targets;
 
