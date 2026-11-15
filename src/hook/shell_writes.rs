@@ -7,12 +7,15 @@
 //! - output redirects: `>`, `>>`, `>|`, `<>`, `&>`, `&>>` (not `2>&1` or `>/dev/null`)
 //! - `tee [-a] FILE...`
 //! - `sed -i[SUFFIX] ... FILE...` (also `sed -i '' ...` on macOS)
-//! - `cp` and `mv`, where the last operand is the target
+//! - `cp`, `mv` and `install`, where the last operand is the target
 //! - `dd of=FILE`
+//! - `$(...)` and backtick substitutions, analyzed as commands of their own
 //!
 //! Not detected: `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`,
-//! `git apply`, and commands run through `eval` or `$(...)`. Heredoc bodies are
-//! not words, so text inside them does not count as a write.
+//! `git apply`, and commands run through `eval`. Heredoc bodies are not words,
+//! so text inside them does not count as a write. Input the parser cannot
+//! handle, or input that is too large or too nested, uses a conservative scan
+//! (see `shell_fallback`).
 
 use brush_parser::ast::{
     AndOr, AndOrList, Command, CommandPrefixOrSuffixItem, CompoundCommand, CompoundList,
@@ -20,17 +23,20 @@ use brush_parser::ast::{
     Program, RedirectList, SimpleCommand, Word,
 };
 
+use super::shell_fallback::fallback_targets;
+
+/// Longest command, in bytes, that the parser runs on.
+const MAX_PARSED_LEN: usize = 64 * 1024;
+/// Most `(`, `{`, backticks and compound keywords the parser runs on. Bounds recursion depth.
+const MAX_PARSED_OPENERS: usize = 64;
+/// Deepest chain of substitutions followed. Beyond this, the fallback scan takes over.
+const MAX_SUBSTITUTION_DEPTH: usize = 8;
+const COMPOUND_KEYWORDS: [&str; 6] = ["if", "while", "until", "for", "case", "select"];
+
 /// Returns the file names that `command` writes to. Names are not resolved.
 pub fn write_targets(command: &str) -> Vec<String> {
     let mut targets = Vec::new();
-    let mut parser = brush_parser::Parser::new(
-        std::io::BufReader::new(command.as_bytes()),
-        &brush_parser::ParserOptions::default(),
-    );
-    match parser.parse_program() {
-        Ok(program) => walk_program(&program, &mut targets),
-        Err(_) => fallback_targets(command, &mut targets),
-    }
+    collect_targets(command, 0, &mut targets);
 
     targets.retain(|t| !t.is_empty() && !t.starts_with("/dev/"));
     let mut unique = Vec::new();
@@ -42,21 +48,83 @@ pub fn write_targets(command: &str) -> Vec<String> {
     unique
 }
 
-/// Used when the parser rejects the input. Takes the word after each `>`.
-/// Quoted text can match here, which is a false positive but errs on the safe side.
-fn fallback_targets(command: &str, out: &mut Vec<String>) {
-    let spaced = command
-        .replace(">>", " > ")
-        .replace(">|", " > ")
-        .replace('>', " > ");
-    let mut words = spaced.split_whitespace();
-    while let Some(word) = words.next() {
-        if word == ">" {
-            if let Some(target) = words.next().filter(|t| !t.starts_with('&')) {
-                out.push(target.to_string());
+fn collect_targets(command: &str, depth: usize, out: &mut Vec<String>) {
+    if depth > MAX_SUBSTITUTION_DEPTH || too_large_to_parse(command) {
+        return fallback_targets(command, out);
+    }
+    let mut parser = brush_parser::Parser::new(
+        std::io::BufReader::new(command.as_bytes()),
+        &brush_parser::ParserOptions::default(),
+    );
+    match parser.parse_program() {
+        Ok(program) => {
+            walk_program(&program, out);
+            for body in substitution_bodies(command) {
+                collect_targets(body, depth + 1, out);
             }
         }
+        Err(_) => fallback_targets(command, out),
     }
+}
+
+/// True when the input is long or has many openers, so the parser must not see it.
+fn too_large_to_parse(command: &str) -> bool {
+    let symbols = command
+        .chars()
+        .filter(|c| matches!(c, '(' | '{' | '`'))
+        .count();
+    let keywords = command
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| COMPOUND_KEYWORDS.contains(w))
+        .count();
+    command.len() > MAX_PARSED_LEN || symbols + keywords > MAX_PARSED_OPENERS
+}
+
+/// Returns the text inside each `$(...)` and backtick substitution that is not in single quotes.
+fn substitution_bodies(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut bodies = Vec::new();
+    let (mut single, mut double) = (false, false);
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        i += 1;
+        match c {
+            b'\\' if !single => i += 1,
+            b'\'' if !double => single = !single,
+            b'"' if !single => double = !double,
+            b'$' if !single && bytes.get(i) == Some(&b'(') => {
+                let start = i + 1;
+                let end = matching_paren(bytes, start);
+                bodies.push(&text[start..end]);
+                i = end + 1;
+            }
+            b'`' if !single => {
+                let end = bytes[i..]
+                    .iter()
+                    .position(|&b| b == b'`')
+                    .map_or(bytes.len(), |p| i + p);
+                bodies.push(&text[i..end]);
+                i = end + 1;
+            }
+            _ => {}
+        }
+    }
+    bodies
+}
+
+/// Returns the index of the `)` that closes a `(` just before `start`, or the end of `bytes`.
+fn matching_paren(bytes: &[u8], start: usize) -> usize {
+    let mut depth = 0usize;
+    for (offset, &b) in bytes[start..].iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' if depth == 0 => return start + offset,
+            b')' => depth -= 1,
+            _ => {}
+        }
+    }
+    bytes.len()
 }
 
 fn walk_program(program: &Program, out: &mut Vec<String>) {
@@ -245,7 +313,7 @@ fn ansi_c(body: &str) -> String {
 }
 
 /// Looks at one simple command and adds the files it writes to.
-fn analyze(args: &[String], out: &mut Vec<String>) {
+pub(super) fn analyze(args: &[String], out: &mut Vec<String>) {
     let Some(program) = args.first() else {
         return;
     };
@@ -430,5 +498,81 @@ mod tests {
     #[test]
     fn parse_error_falls_back_to_whitespace_scan() {
         assert_eq!(targets("echo a > b.rs ) )"), vec!["b.rs"]);
+    }
+
+    #[test]
+    fn parse_error_keeps_cp_and_tee_checks() {
+        assert_eq!(targets("cp /tmp/x src/main.rs\n)"), vec!["src/main.rs"]);
+        assert_eq!(targets("echo hi | tee src/main.rs\n)"), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn parse_error_keeps_sed_mv_install_dd_checks() {
+        assert_eq!(targets("sed -i 's/a/b/' src/a.rs\n)"), vec!["src/a.rs"]);
+        assert_eq!(targets("mv tmp.rs src/b.rs\n)"), vec!["src/b.rs"]);
+        assert_eq!(targets("install x src/c.rs\n)"), vec!["src/c.rs"]);
+        assert_eq!(targets("dd if=x of=src/d.rs\n)"), vec!["src/d.rs"]);
+    }
+
+    #[test]
+    fn parse_error_fallback_removes_quotes() {
+        assert_eq!(targets("echo x > 'src/main.rs'\n)"), vec!["src/main.rs"]);
+        assert_eq!(targets("echo x > \"src/main.rs\"\n)"), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn parse_error_fallback_still_reads_fd_and_read_only_commands() {
+        assert!(targets("cat src/main.rs\n)").is_empty());
+        assert!(targets("cargo build 2>&1\n)").is_empty());
+    }
+
+    #[test]
+    fn detects_writes_inside_dollar_paren_substitution() {
+        assert_eq!(
+            targets("echo $(cp /tmp/x src/main.rs)"),
+            vec!["src/main.rs"]
+        );
+        assert_eq!(
+            targets("echo \"$(cp /tmp/x src/main.rs)\""),
+            vec!["src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn detects_writes_inside_assignment_substitution() {
+        assert_eq!(targets("x=$(tee src/main.rs <<<code)"), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn detects_writes_inside_backtick_substitution() {
+        assert_eq!(targets("echo `cp /tmp/x src/main.rs`"), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn single_quoted_substitution_is_text() {
+        assert!(targets("echo '$(cp /tmp/x src/main.rs)'").is_empty());
+        assert!(targets("echo \"$(cat src/main.rs)\"").is_empty());
+    }
+
+    #[test]
+    fn deeply_nested_parens_still_find_the_write() {
+        let depth = 500;
+        let cmd = format!(
+            "{}echo x > src/main.rs{}",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        assert_eq!(targets(&cmd), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn fifty_thousand_nested_parens_do_not_overflow() {
+        let depth = 50_000;
+        let cmd = format!(
+            "{}echo x > src/main.rs{}",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        assert_eq!(targets(&cmd), vec!["src/main.rs"]);
     }
 }
