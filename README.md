@@ -255,13 +255,29 @@ If the model is unknown, `unknown_model` decides the edit. The default is `block
 
 comrade also checks some Bash commands that write files. It detects:
 
-- output redirects such as `>`, `>>`, `>|` and `&>`
+- output redirects such as `>`, `>>`, `>|`, `<>`, `&>` and `>&FILE`
 - `tee`
 - `sed -i`
 - `cp`, `mv` and `install`
 - `dd of=`
+- the commands above inside `$(...)`, backticks, `<(...)` and `>(...)`
 
-It skips heredoc bodies and `/dev/null`. It does not detect `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`, or commands run through `eval` or `$(...)`. With `cp -t`, `mv -t` or `install -t`, it names the last operand as the write target, not the file in the `-t` directory. Treat the Bash check as a guard against common cases, not as a full sandbox.
+It skips `/dev/null`. Text in a heredoc body is not a command. But Bash runs `$(...)` and backticks in an unquoted heredoc body (`<<EOF`, not `<<'EOF'`). So comrade scans an unquoted heredoc body that has `$(` or a backtick. It does not detect:
+
+- `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`
+- commands run through `eval`
+- `bash -c` and `sh -c`
+- `env`, `sudo`, `command` and `nohup` wrappers, for example `env cp a src/main.rs`, `sudo tee`, `command cp`, `nohup tee`
+- `find -exec`
+- `touch`, `truncate`, `ln`, `rsync`, `patch`, `sponge` and `tar`
+- `cp` and `mv` with `-t` or `--target-directory`
+- `sed` with `--expression=` or `--file=`
+- `cd` in the same command
+- the `/dev/..` path form
+
+A substitution or variable inside a target name ($(...), $VAR, ~, globs) is not resolved.
+
+Treat the Bash check as a guard against common cases, not as a full sandbox.
 
 ## Fail-safe
 

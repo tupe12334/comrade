@@ -1,46 +1,69 @@
-//! Finds the files that a simple Bash command writes to.
+//! Finds the files that a Bash command writes to.
 //!
-//! This is a best-effort scan, not a shell parser. It detects:
+//! The command is parsed with `brush-parser`, then every simple command is
+//! walked, including commands inside compound commands, functions and
+//! process substitutions. It detects:
 //!
-//! - output redirects: `>`, `>>`, `>|`, `&>`, `&>>` (not `2>&1` or `>/dev/null`)
+//! - output redirects: `>`, `>>`, `>|`, `<>`, `&>`, `&>>` and `>&FILE` (not `2>&1` or `>/dev/null`)
 //! - `tee [-a] FILE...`
 //! - `sed -i[SUFFIX] ... FILE...` (also `sed -i '' ...` on macOS)
-//! - `cp` and `mv`, where the last operand is the target
+//! - `cp`, `mv` and `install`, where the last operand is the target
 //! - `dd of=FILE`
+//! - `$(...)` and backtick substitutions in any word, in `${...}` and `$((...))`,
+//!   and in heredoc bodies that expand, analyzed as commands of their own
 //!
-//! Not detected: `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`,
-//! `git apply`, and commands run through `eval` or `$(...)`. Heredoc bodies are
-//! skipped, so text inside them does not count as a write.
+//! Each word is split into pieces with `brush_parser::word`, so quotes and `$'...'`
+//! are removed as bash removes them.
+//!
+//! Not detected:
+//!
+//! - `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`
+//! - commands run through `eval`
+//! - `bash -c` and `sh -c`
+//! - `env`, `sudo`, `command` and `nohup` wrappers, for example `env cp a src/main.rs`, `sudo tee`, `command cp`, `nohup tee`
+//! - `find -exec`
+//! - `touch`, `truncate`, `ln`, `rsync`, `patch`, `sponge` and `tar`
+//! - `cp` and `mv` with `-t` or `--target-directory`
+//! - `sed` with `--expression=` or `--file=`
+//! - `cd` in the same command
+//! - the `/dev/..` path form
+//!
+//! A substitution or variable inside a target name ($(...), $VAR, ~, globs) is not resolved.
+//!
+//! Text in a heredoc body is not a command. If any part of the input,
+//! a substitution body included, does not parse, or is too large or too nested,
+//! the whole input uses a conservative scan (see `shell_fallback`). An arithmetic
+//! command `((...))` also adds that scan, because the parser reads `( (` as `((`.
+
+use brush_parser::ast::{
+    AndOr, Command, CommandPrefixOrSuffixItem, CompoundCommand, CompoundList, CompoundListItem,
+    ExtendedTestExpr, FunctionBody, IoFileRedirectKind, IoFileRedirectTarget, IoRedirect, Pipeline,
+    Program, RedirectList, SimpleCommand, Word,
+};
+use brush_parser::word::{WordPiece, WordPieceWithSource};
+use brush_parser::ParserOptions;
+
+use super::shell_fallback::fallback_targets;
+use super::shell_words::{ansi_c, is_fd_word};
+
+/// Longest command, in bytes, that the parser runs on.
+const MAX_PARSED_LEN: usize = 64 * 1024;
+/// Most `(`, `{`, backticks and compound keywords the parser runs on. Bounds recursion depth.
+const MAX_PARSED_OPENERS: usize = 64;
+/// Deepest chain of substitutions followed. Beyond this, the fallback scan takes over.
+const MAX_SUBSTITUTION_DEPTH: usize = 8;
+const COMPOUND_KEYWORDS: [&str; 6] = ["if", "while", "until", "for", "case", "select"];
 
 /// Returns the file names that `command` writes to. Names are not resolved.
 pub fn write_targets(command: &str) -> Vec<String> {
-    let text = strip_heredoc_bodies(command);
-    let tokens = tokenize(&text);
-
     let mut targets = Vec::new();
-    let mut args: Vec<String> = Vec::new();
-    let mut pending = Pending::None;
-
-    for token in tokens {
-        match token {
-            Token::Separator => {
-                analyze(&args, &mut targets);
-                args.clear();
-                pending = Pending::None;
-            }
-            Token::Word(word) => match pending {
-                Pending::Target => {
-                    targets.push(word);
-                    pending = Pending::None;
-                }
-                Pending::Skip => pending = Pending::None,
-                Pending::None => args.push(word),
-            },
-            Token::Redirect => pending = Pending::Target,
-            Token::Input | Token::Dup => pending = Pending::Skip,
-        }
+    let mut arithmetic = false;
+    if parsed_targets(command, 0, &mut targets, &mut arithmetic).is_none() || arithmetic {
+        // A part did not parse, or the parser found an arithmetic command, which can be
+        // nested subshells read wrongly: `( (echo x > f) )` parses as `((...))`.
+        // Scan the whole input, and keep what the parser found.
+        fallback_targets(command, &mut targets);
     }
-    analyze(&args, &mut targets);
 
     targets.retain(|t| !t.is_empty() && !t.starts_with("/dev/"));
     let mut unique = Vec::new();
@@ -52,177 +75,312 @@ pub fn write_targets(command: &str) -> Vec<String> {
     unique
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pending {
-    None,
-    /// The next word is a write target.
-    Target,
-    /// The next word is not a file (for example an fd number or an input).
-    Skip,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Token {
-    Word(String),
-    /// An output redirect such as `>` or `>>`.
-    Redirect,
-    /// An input redirect such as `<`.
-    Input,
-    /// A file descriptor duplication such as `>&`.
-    Dup,
-    /// A command separator such as `;`, `&&`, `|` or a newline.
-    Separator,
-}
-
-/// Removes the body lines of heredocs, keeping the lines that start them.
-fn strip_heredoc_bodies(command: &str) -> String {
-    let mut out = String::with_capacity(command.len());
-    let mut delimiter: Option<String> = None;
-    for line in command.lines() {
-        if let Some(end) = &delimiter {
-            if line.trim() == end {
-                delimiter = None;
-            }
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-        delimiter = heredoc_delimiter(line);
+/// Adds the targets that the parser finds in `command`. Returns `None` when a part of it,
+/// such as a substitution body, does not parse or is too large to parse. Sets `arithmetic`
+/// when it finds an arithmetic command.
+fn parsed_targets(
+    command: &str,
+    depth: usize,
+    out: &mut Vec<String>,
+    arithmetic: &mut bool,
+) -> Option<()> {
+    if depth > MAX_SUBSTITUTION_DEPTH || too_large_to_parse(command) {
+        return None;
     }
-    out
+    let mut parser = brush_parser::Parser::new(
+        std::io::BufReader::new(command.as_bytes()),
+        &ParserOptions::default(),
+    );
+    let program = parser.parse_program().ok()?;
+    Walk {
+        depth,
+        out,
+        arithmetic,
+    }
+    .program(&program)
 }
 
-fn heredoc_delimiter(line: &str) -> Option<String> {
-    let index = line.find("<<")?;
-    let rest = &line[index + 2..];
-    if rest.starts_with('<') {
-        return None; // here-string, not a heredoc
-    }
-    let rest = rest.trim_start_matches('-').trim_start();
-    let word: String = rest
+/// True when the input is long or has many openers, so the parser must not see it.
+fn too_large_to_parse(command: &str) -> bool {
+    let symbols = command
         .chars()
-        .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '|' | '&' | ')'))
-        .collect();
-    let word = word.trim_matches(|c| c == '\'' || c == '"');
-    if word.is_empty() {
-        None
-    } else {
-        Some(word.to_string())
-    }
+        .filter(|c| matches!(c, '(' | '{' | '`'))
+        .count();
+    let keywords = command
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| COMPOUND_KEYWORDS.contains(w))
+        .count();
+    command.len() > MAX_PARSED_LEN || symbols + keywords > MAX_PARSED_OPENERS
 }
 
-fn tokenize(text: &str) -> Vec<Token> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut tokens = Vec::new();
-    let mut word: Option<String> = None;
-    let mut i = 0;
+/// Walks the AST of one command. A method returns `None` when a part does not parse.
+struct Walk<'a> {
+    /// How many substitutions enclose this command.
+    depth: usize,
+    out: &'a mut Vec<String>,
+    /// Set when an arithmetic command is found, so the caller also runs the fallback scan.
+    arithmetic: &'a mut bool,
+}
 
-    while i < chars.len() {
-        let c = chars[i];
-        match c {
-            '\'' => {
-                let buffer = word.get_or_insert_with(String::new);
-                i += 1;
-                while i < chars.len() && chars[i] != '\'' {
-                    buffer.push(chars[i]);
-                    i += 1;
-                }
-                i += 1;
+impl Walk<'_> {
+    fn program(&mut self, program: &Program) -> Option<()> {
+        program
+            .complete_commands
+            .iter()
+            .try_for_each(|list| self.list(list))
+    }
+
+    fn list(&mut self, list: &CompoundList) -> Option<()> {
+        for CompoundListItem(and_or, _) in &list.0 {
+            self.pipeline(&and_or.first)?;
+            for item in &and_or.additional {
+                let (AndOr::And(pipeline) | AndOr::Or(pipeline)) = item;
+                self.pipeline(pipeline)?;
             }
-            '"' => {
-                let buffer = word.get_or_insert_with(String::new);
-                i += 1;
-                while i < chars.len() && chars[i] != '"' {
-                    if chars[i] == '\\'
-                        && i + 1 < chars.len()
-                        && matches!(chars[i + 1], '"' | '\\' | '$' | '`')
-                    {
-                        buffer.push(chars[i + 1]);
-                        i += 2;
-                    } else {
-                        buffer.push(chars[i]);
-                        i += 1;
+        }
+        Some(())
+    }
+
+    fn pipeline(&mut self, pipeline: &Pipeline) -> Option<()> {
+        pipeline
+            .seq
+            .iter()
+            .try_for_each(|command| self.command(command))
+    }
+
+    fn command(&mut self, command: &Command) -> Option<()> {
+        match command {
+            Command::Simple(simple) => self.simple(simple),
+            Command::Compound(compound, redirects) => {
+                self.compound(compound)?;
+                self.redirects(redirects.as_ref())
+            }
+            Command::Function(definition) => {
+                let FunctionBody(compound, redirects) = &definition.body;
+                self.compound(compound)?;
+                self.redirects(redirects.as_ref())
+            }
+            Command::ExtendedTest(test, redirects) => {
+                self.test(&test.expr)?;
+                self.redirects(redirects.as_ref())
+            }
+        }
+    }
+
+    fn compound(&mut self, compound: &CompoundCommand) -> Option<()> {
+        match compound {
+            CompoundCommand::Arithmetic(a) => {
+                *self.arithmetic = true;
+                self.text(&a.expr.value).map(drop)
+            }
+            CompoundCommand::ArithmeticForClause(c) => {
+                for expr in [&c.initializer, &c.condition, &c.updater]
+                    .into_iter()
+                    .flatten()
+                {
+                    self.text(&expr.value)?;
+                }
+                self.list(&c.body.list)
+            }
+            CompoundCommand::BraceGroup(b) => self.list(&b.list),
+            CompoundCommand::Subshell(s) => self.list(&s.list),
+            CompoundCommand::ForClause(f) => {
+                for word in f.values.iter().flatten() {
+                    self.word(word)?;
+                }
+                self.list(&f.body.list)
+            }
+            CompoundCommand::CaseClause(c) => {
+                self.word(&c.value)?;
+                for case in &c.cases {
+                    for pattern in &case.patterns {
+                        self.word(pattern)?;
+                    }
+                    if let Some(list) = &case.cmd {
+                        self.list(list)?;
                     }
                 }
-                i += 1;
+                Some(())
             }
-            '\\' => {
-                if i + 1 < chars.len() {
-                    word.get_or_insert_with(String::new).push(chars[i + 1]);
+            CompoundCommand::IfClause(c) => {
+                self.list(&c.condition)?;
+                self.list(&c.then)?;
+                for clause in c.elses.iter().flatten() {
+                    if let Some(condition) = &clause.condition {
+                        self.list(condition)?;
+                    }
+                    self.list(&clause.body)?;
                 }
-                i += 2;
+                Some(())
             }
-            ' ' | '\t' | '\r' => {
-                flush(&mut word, &mut tokens);
-                i += 1;
+            CompoundCommand::WhileClause(w) | CompoundCommand::UntilClause(w) => {
+                self.list(&w.0)?;
+                self.list(&w.1.list)
             }
-            '\n' | ';' | '|' | '(' | ')' => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Separator);
-                i += 1;
+            CompoundCommand::Coprocess(c) => self.command(&c.body),
+        }
+    }
+
+    fn test(&mut self, expr: &ExtendedTestExpr) -> Option<()> {
+        match expr {
+            ExtendedTestExpr::And(a, b) | ExtendedTestExpr::Or(a, b) => {
+                self.test(a)?;
+                self.test(b)
             }
-            '&' if chars.get(i + 1) == Some(&'>') => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Redirect);
-                i += 2;
-                if chars.get(i) == Some(&'>') {
-                    i += 1;
-                }
-            }
-            '&' => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Separator);
-                i += 1;
-            }
-            '>' => {
-                // A digit word right before `>` is a file descriptor, such as `2>`.
-                let fd_prefix = word
-                    .as_deref()
-                    .is_some_and(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_digit()));
-                if fd_prefix {
-                    word = None;
-                } else {
-                    flush(&mut word, &mut tokens);
-                }
-                i += 1;
-                if chars.get(i) == Some(&'>') || chars.get(i) == Some(&'|') {
-                    i += 1;
-                }
-                if chars.get(i) == Some(&'&') {
-                    i += 1;
-                    tokens.push(Token::Dup);
-                } else {
-                    tokens.push(Token::Redirect);
-                }
-            }
-            '<' => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Input);
-                while chars.get(i) == Some(&'<') {
-                    i += 1;
-                }
-                if matches!(chars.get(i), Some('&') | Some('>')) {
-                    i += 1;
-                }
-            }
-            _ => {
-                word.get_or_insert_with(String::new).push(c);
-                i += 1;
+            ExtendedTestExpr::Not(e) | ExtendedTestExpr::Parenthesized(e) => self.test(e),
+            ExtendedTestExpr::UnaryTest(_, word) => self.word(word).map(drop),
+            ExtendedTestExpr::BinaryTest(_, left, right) => {
+                self.word(left)?;
+                self.word(right).map(drop)
             }
         }
     }
-    flush(&mut word, &mut tokens);
-    tokens
+
+    fn simple(&mut self, simple: &SimpleCommand) -> Option<()> {
+        // Prefix assignments such as `FOO=1 tee x` are not argv words.
+        if let Some(prefix) = &simple.prefix {
+            for item in &prefix.0 {
+                self.item(item)?;
+            }
+        }
+        let mut argv = Vec::new();
+        if let Some(word) = &simple.word_or_name {
+            argv.push(self.word(word)?);
+        }
+        if let Some(suffix) = &simple.suffix {
+            for item in &suffix.0 {
+                if let Some(text) = self.item(item)? {
+                    argv.push(text);
+                }
+            }
+        }
+        analyze(&argv, self.out);
+        Some(())
+    }
+
+    /// Handles redirects and process substitutions. Returns the text of argv words.
+    fn item(&mut self, item: &CommandPrefixOrSuffixItem) -> Option<Option<String>> {
+        match item {
+            CommandPrefixOrSuffixItem::IoRedirect(redirect) => {
+                self.redirect(redirect).map(|()| None)
+            }
+            CommandPrefixOrSuffixItem::ProcessSubstitution(_, sub) => {
+                self.list(&sub.list).map(|()| None)
+            }
+            CommandPrefixOrSuffixItem::Word(word)
+            | CommandPrefixOrSuffixItem::AssignmentWord(_, word) => self.word(word).map(Some),
+        }
+    }
+
+    fn redirects(&mut self, redirects: Option<&RedirectList>) -> Option<()> {
+        let Some(RedirectList(items)) = redirects else {
+            return Some(());
+        };
+        items
+            .iter()
+            .try_for_each(|redirect| self.redirect(redirect))
+    }
+
+    fn redirect(&mut self, redirect: &IoRedirect) -> Option<()> {
+        match redirect {
+            IoRedirect::File(
+                _,
+                kind,
+                IoFileRedirectTarget::Filename(word) | IoFileRedirectTarget::Duplicate(word),
+            ) => {
+                let target = self.word(word)?;
+                if is_write(kind, &target) {
+                    self.out.push(target);
+                }
+            }
+            IoRedirect::File(_, _, IoFileRedirectTarget::ProcessSubstitution(_, sub)) => {
+                self.list(&sub.list)?;
+            }
+            IoRedirect::File(_, _, IoFileRedirectTarget::Fd(_)) => {}
+            // With an unquoted delimiter, bash runs the substitutions in the body.
+            IoRedirect::HereDocument(_, doc) if doc.requires_expansion => {
+                let body = &doc.doc.value;
+                let pieces =
+                    brush_parser::word::parse_heredoc(body, &ParserOptions::default()).ok()?;
+                self.pieces(body, &pieces)?;
+            }
+            IoRedirect::HereDocument(..) => {}
+            IoRedirect::HereString(_, word) => {
+                self.word(word)?;
+            }
+            IoRedirect::OutputAndError(word, _) => {
+                let target = self.word(word)?;
+                self.out.push(target);
+            }
+        }
+        Some(())
+    }
+
+    /// Runs the substitutions in `word` and returns its text after quote removal.
+    fn word(&mut self, word: &Word) -> Option<String> {
+        self.text(&word.value)
+    }
+
+    fn text(&mut self, raw: &str) -> Option<String> {
+        let pieces = brush_parser::word::parse(raw, &ParserOptions::default()).ok()?;
+        self.pieces(raw, &pieces)
+    }
+
+    /// Runs the substitutions in `pieces` and joins the pieces as bash does after quote
+    /// removal. An expansion keeps its raw text, because its value is not known.
+    fn pieces(&mut self, raw: &str, pieces: &[WordPieceWithSource]) -> Option<String> {
+        let mut text = String::new();
+        for piece in pieces {
+            let source = raw.get(piece.start_index..piece.end_index)?;
+            match &piece.piece {
+                WordPiece::Text(s) | WordPiece::SingleQuotedText(s) => text.push_str(s),
+                WordPiece::AnsiCQuotedText(s) => text.push_str(&ansi_c(s)),
+                WordPiece::EscapeSequence(s) => {
+                    // A backslash before a newline joins lines. It adds no character.
+                    let escaped = s.strip_prefix('\\').unwrap_or(s);
+                    if escaped != "\n" {
+                        text.push_str(escaped);
+                    }
+                }
+                WordPiece::DoubleQuotedSequence(inner)
+                | WordPiece::GettextDoubleQuotedSequence(inner) => {
+                    text.push_str(&self.pieces(raw, inner)?);
+                }
+                WordPiece::CommandSubstitution(body)
+                | WordPiece::BackquotedCommandSubstitution(body) => {
+                    parsed_targets(body, self.depth + 1, self.out, self.arithmetic)?;
+                    text.push_str(source);
+                }
+                WordPiece::ParameterExpansion(_) | WordPiece::ArithmeticExpression(_) => {
+                    // `${x:-$(cmd)}` and `$(( $(cmd) ))` run `cmd`.
+                    let inner = source.get(1..)?;
+                    if inner.contains(['$', '`']) {
+                        self.text(inner)?;
+                    }
+                    text.push_str(source);
+                }
+                WordPiece::TildeExpansion(_) => text.push_str(source),
+            }
+        }
+        Some(text)
+    }
 }
 
-fn flush(word: &mut Option<String>, tokens: &mut Vec<Token>) {
-    if let Some(w) = word.take() {
-        tokens.push(Token::Word(w));
+/// True when a redirect of this kind to `target` opens a file for writing.
+/// `>&WORD` writes to WORD unless WORD names a descriptor.
+fn is_write(kind: &IoFileRedirectKind, target: &str) -> bool {
+    match kind {
+        IoFileRedirectKind::Write
+        | IoFileRedirectKind::Append
+        | IoFileRedirectKind::Clobber
+        | IoFileRedirectKind::ReadAndWrite => true,
+        IoFileRedirectKind::DuplicateOutput => !is_fd_word(target),
+        IoFileRedirectKind::Read | IoFileRedirectKind::DuplicateInput => false,
     }
 }
 
 /// Looks at one simple command and adds the files it writes to.
-fn analyze(args: &[String], out: &mut Vec<String>) {
+pub(super) fn analyze(args: &[String], out: &mut Vec<String>) {
     let Some(program) = args.first() else {
         return;
     };
@@ -288,86 +446,4 @@ fn sed_files(args: &[String]) -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::write_targets;
-
-    fn targets(cmd: &str) -> Vec<String> {
-        write_targets(cmd)
-    }
-
-    #[test]
-    fn detects_output_redirect() {
-        assert_eq!(targets("echo hi > src/main.rs"), vec!["src/main.rs"]);
-        assert_eq!(targets("echo hi >> a.py"), vec!["a.py"]);
-        assert_eq!(targets("echo hi >| b.go"), vec!["b.go"]);
-        assert_eq!(targets("make && echo x > out.sh"), vec!["out.sh"]);
-    }
-
-    #[test]
-    fn ignores_fd_dups_and_null() {
-        assert!(targets("cargo build 2>&1").is_empty());
-        assert!(targets("echo x > /dev/null").is_empty());
-        assert!(targets("cmd 2>/dev/null").is_empty());
-    }
-
-    #[test]
-    fn detects_combined_stdout_stderr_redirect() {
-        assert_eq!(targets("cmd &> all.log"), vec!["all.log"]);
-    }
-
-    #[test]
-    fn heredoc_body_is_not_a_write() {
-        let cmd = "cat > lib.rs <<'EOF'\nlet x = 1; // > fake.rs\nEOF\n";
-        assert_eq!(targets(cmd), vec!["lib.rs"]);
-    }
-
-    #[test]
-    fn quoted_redirect_is_text() {
-        assert!(targets("echo \"a > b.rs\"").is_empty());
-        assert!(targets("echo 'x >> y.ts'").is_empty());
-    }
-
-    #[test]
-    fn input_redirect_is_not_a_write() {
-        assert!(targets("wc -l < notes.rs").is_empty());
-    }
-
-    #[test]
-    fn detects_tee() {
-        assert_eq!(
-            targets("cargo build 2>&1 | tee build.log"),
-            vec!["build.log"]
-        );
-        assert_eq!(targets("echo x | tee -a a.ts b.ts"), vec!["a.ts", "b.ts"]);
-    }
-
-    #[test]
-    fn detects_sed_in_place() {
-        assert_eq!(targets("sed -i 's/a/b/' x.ts"), vec!["x.ts"]);
-        assert_eq!(targets("sed -i.bak 's/a/b/' x.ts"), vec!["x.ts"]);
-        assert_eq!(
-            targets("sed -i '' -e 's/a/b/' y.go z.go"),
-            vec!["y.go", "z.go"]
-        );
-        assert_eq!(targets("sed -E -i 's/a/b/' w.c"), vec!["w.c"]);
-    }
-
-    #[test]
-    fn sed_without_in_place_writes_nothing() {
-        assert!(targets("sed 's/a/b/' x.ts").is_empty());
-        assert!(targets("sed -n 's/a/b/p' x.ts").is_empty());
-    }
-
-    #[test]
-    fn detects_cp_mv_and_dd() {
-        assert_eq!(targets("cp a.rs b.rs"), vec!["b.rs"]);
-        assert_eq!(targets("mv -f tmp.py final.py"), vec!["final.py"]);
-        assert_eq!(targets("dd if=x of=y.c"), vec!["y.c"]);
-    }
-
-    #[test]
-    fn plain_commands_write_nothing() {
-        assert!(targets("ls -la").is_empty());
-        assert!(targets("cargo test").is_empty());
-    }
-}
+mod tests;
