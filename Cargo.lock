@@ -294,7 +294,6 @@ dependencies = [
  "predicates",
  "serde",
  "serde_json",
- "shlex",
  "tempfile",
  "thiserror",
  "toml",
