@@ -24,7 +24,7 @@ use brush_parser::ast::{
 };
 
 use super::shell_fallback::fallback_targets;
-use super::shell_words::is_fd_word;
+use super::shell_words::{ansi_c, is_fd_word};
 
 /// Longest command, in bytes, that the parser runs on.
 const MAX_PARSED_LEN: usize = 64 * 1024;
@@ -301,26 +301,6 @@ fn unquote(raw: &str) -> String {
         Some(mut parts) if parts.len() == 1 => parts.remove(0),
         _ => raw.to_string(),
     }
-}
-
-/// Decodes the body of a `$'...'` string. Unknown escapes keep the character.
-fn ansi_c(body: &str) -> String {
-    let mut out = String::new();
-    let mut chars = body.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('t') => out.push('\t'),
-            Some('r') => out.push('\r'),
-            Some(other) => out.push(other),
-            None => out.push('\\'),
-        }
-    }
-    out
 }
 
 /// Looks at one simple command and adds the files it writes to.
@@ -601,5 +581,27 @@ mod tests {
         assert_eq!(targets("echo x >&src/main.rs\n)"), vec!["src/main.rs"]);
         assert_eq!(targets("echo x >& src/main.rs\n)"), vec!["src/main.rs"]);
         assert!(targets("cargo build >&2\n)").is_empty());
+    }
+
+    #[test]
+    fn ansi_c_escapes_are_decoded_like_bash() {
+        assert_eq!(targets("echo x > $'\\x73rc/main.rs'"), vec!["src/main.rs"]);
+        assert_eq!(targets("echo x > $'\\163rc/main.rs'"), vec!["src/main.rs"]);
+        assert_eq!(
+            targets("echo x > $'\\u0073rc/main.rs'"),
+            vec!["src/main.rs"]
+        );
+        assert_eq!(
+            targets("echo x > $'src/main.rs\\x00.txt'"),
+            vec!["src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn parse_error_fallback_decodes_ansi_c_escapes() {
+        assert_eq!(
+            targets("echo x > $'\\x73rc/main.rs'\n)"),
+            vec!["src/main.rs"]
+        );
     }
 }

@@ -5,7 +5,7 @@
 //! command. The scan is one flat loop, so deep nesting cannot overflow the
 //! stack. It can report extra targets, which is the safe error.
 
-use super::shell_words::is_fd_word;
+use super::shell_words::{ansi_c, is_fd_word};
 use super::shell_writes::analyze;
 
 /// Adds the write targets that a flat token scan finds in `command`.
@@ -21,16 +21,11 @@ pub(super) fn fallback_targets(command: &str, out: &mut Vec<String>) {
     };
     let mut chars = command.chars().peekable();
     let mut single = false;
-    let mut ansi = false;
     let mut double = false;
     while let Some(c) = chars.next() {
         if single {
             if c == '\'' {
                 single = false;
-            } else if ansi && c == '\\' {
-                if let Some(next) = chars.next() {
-                    scan.push(next);
-                }
             } else {
                 scan.push(c);
             }
@@ -44,13 +39,22 @@ pub(super) fn fallback_targets(command: &str, out: &mut Vec<String>) {
             }
             '$' if !double && chars.peek() == Some(&'\'') => {
                 chars.next();
-                single = true;
-                ansi = true;
+                let mut body = String::new();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\'' => break,
+                        '\\' => {
+                            body.push(c);
+                            body.extend(chars.next());
+                        }
+                        _ => body.push(c),
+                    }
+                }
                 scan.in_word = true;
+                ansi_c(&body).chars().for_each(|c| scan.push(c));
             }
             '\'' if !double => {
                 single = true;
-                ansi = false;
                 scan.in_word = true;
             }
             '"' => {
