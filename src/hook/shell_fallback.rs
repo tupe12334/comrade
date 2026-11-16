@@ -2,14 +2,30 @@
 //!
 //! The text is split on shell separators (`;`, `&`, `|`, `(`, `)`, `` ` ``,
 //! newlines), quotes are removed, and each piece is checked like a simple
-//! command. The scan is one flat loop, so deep nesting cannot overflow the
-//! stack. It can report extra targets, which is the safe error.
+//! command. Double-quoted text and heredoc bodies are not commands. When that
+//! reading may hide code, the input is scanned again with quote marks
+//! removed and all text read as code. The scan is one flat loop, so deep nesting cannot overflow
+//! the stack. It can report extra targets, which is the safe error.
+
+use std::iter::Peekable;
+use std::str::Chars;
 
 use super::shell_words::{ansi_c, is_fd_word};
 use super::shell_writes::analyze;
 
 /// Adds the write targets that a flat token scan finds in `command`.
 pub(super) fn fallback_targets(command: &str, out: &mut Vec<String>) {
+    if !scan(command, true, out) {
+        // Double-quoted text holds a substitution, or a quote is not closed. The flat scan
+        // cannot tell text from code there, so scan again with all quoted text read as code.
+        scan(command, false, out);
+    }
+}
+
+/// Scans `command` once. With `quotes_are_text`, quoted text and heredoc bodies are not
+/// commands. Without it, quote marks are only removed. Returns false when the first reading
+/// may hide code.
+fn scan(command: &str, quotes_are_text: bool, out: &mut Vec<String>) -> bool {
     let mut scan = Scan {
         out,
         word: String::new(),
@@ -18,10 +34,13 @@ pub(super) fn fallback_targets(command: &str, out: &mut Vec<String>) {
         redirect_next: false,
         dup_next: false,
         skip_next: false,
+        heredoc_next: false,
+        heredocs: Vec::new(),
     };
     let mut chars = command.chars().peekable();
     let mut single = false;
     let mut double = false;
+    let mut sure = true;
     while let Some(c) = chars.next() {
         if single {
             if c == '\'' {
@@ -29,6 +48,13 @@ pub(super) fn fallback_targets(command: &str, out: &mut Vec<String>) {
             } else {
                 scan.push(c);
             }
+            continue;
+        }
+        if double && !matches!(c, '"' | '\\') {
+            if c == '`' || (c == '$' && chars.peek() == Some(&'(')) {
+                sure = false;
+            }
+            scan.push(c);
             continue;
         }
         match c {
@@ -54,11 +80,11 @@ pub(super) fn fallback_targets(command: &str, out: &mut Vec<String>) {
                 ansi_c(&body).chars().for_each(|c| scan.push(c));
             }
             '\'' if !double => {
-                single = true;
+                single = quotes_are_text;
                 scan.in_word = true;
             }
             '"' => {
-                double = !double;
+                double = quotes_are_text && !double;
                 scan.in_word = true;
             }
             ' ' | '\t' if !double => scan.end_word(),
@@ -79,14 +105,40 @@ pub(super) fn fallback_targets(command: &str, out: &mut Vec<String>) {
             '<' => {
                 scan.drop_fd_digits();
                 scan.end_word();
-                scan.skip_next = true;
+                if quotes_are_text && chars.next_if_eq(&'<').is_some() {
+                    if chars.next_if_eq(&'<').is_some() {
+                        scan.skip_next = true; // here-string
+                    } else {
+                        chars.next_if_eq(&'-');
+                        scan.heredoc_next = true;
+                    }
+                } else {
+                    scan.skip_next = true;
+                }
             }
             '&' if chars.peek() == Some(&'>') => {}
+            '\n' if quotes_are_text => {
+                scan.end_command();
+                for delimiter in std::mem::take(&mut scan.heredocs) {
+                    skip_heredoc_body(&mut chars, &delimiter);
+                }
+            }
             '\n' | ';' | '&' | '|' | '(' | ')' | '`' => scan.end_command(),
             _ => scan.push(c),
         }
     }
     scan.end_command();
+    sure && !single && !double
+}
+
+/// Consumes heredoc body lines up to and including the line that is `delimiter`.
+fn skip_heredoc_body(chars: &mut Peekable<Chars>, delimiter: &str) {
+    loop {
+        let line: String = chars.by_ref().take_while(|&c| c != '\n').collect();
+        if line.trim() == delimiter || chars.peek().is_none() {
+            return;
+        }
+    }
 }
 
 struct Scan<'a> {
@@ -100,6 +152,10 @@ struct Scan<'a> {
     dup_next: bool,
     /// The next word is an input redirect operand, which is not an argument.
     skip_next: bool,
+    /// The next word is a heredoc delimiter.
+    heredoc_next: bool,
+    /// Delimiters of heredocs whose bodies start after the next newline.
+    heredocs: Vec<String>,
 }
 
 impl Scan<'_> {
@@ -121,6 +177,7 @@ impl Scan<'_> {
         self.redirect_next = true;
         self.dup_next = false;
         self.skip_next = false;
+        self.heredoc_next = false;
     }
 
     fn end_word(&mut self) {
@@ -129,7 +186,9 @@ impl Scan<'_> {
         }
         let word = std::mem::take(&mut self.word);
         self.in_word = false;
-        if self.redirect_next {
+        if std::mem::take(&mut self.heredoc_next) {
+            self.heredocs.push(word);
+        } else if self.redirect_next {
             self.redirect_next = false;
             if !(std::mem::take(&mut self.dup_next) && is_fd_word(&word)) {
                 self.out.push(word);
@@ -149,6 +208,7 @@ impl Scan<'_> {
         self.redirect_next = false;
         self.dup_next = false;
         self.skip_next = false;
+        self.heredoc_next = false;
     }
 }
 

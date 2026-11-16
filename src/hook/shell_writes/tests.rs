@@ -290,3 +290,33 @@ fn mixed_ansi_c_quoting_in_a_target_is_decoded() {
     assert_eq!(targets("echo x > \"src/\"$'main'.rs"), vec!["src/main.rs"]);
     assert_eq!(targets("cp /tmp/x src/$'\\x6d'ain.rs"), vec!["src/main.rs"]);
 }
+
+#[test]
+fn parse_error_fallback_keeps_separators_in_double_quotes() {
+    assert_eq!(targets("cp \"a;b\" src/main.rs\n)"), vec!["src/main.rs"]);
+}
+
+#[test]
+fn parse_error_fallback_skips_heredoc_body_with_apostrophe() {
+    let cmd = "cat <<'EOF'\ndon't\nEOF\necho x > src/main.rs\n)";
+    assert_eq!(targets(cmd), vec!["src/main.rs"]);
+}
+
+#[test]
+fn parse_error_fallback_reads_double_quoted_redirect_as_text() {
+    assert!(targets("echo \"a > b.rs\"\n)").is_empty());
+}
+
+#[test]
+fn heredoc_body_with_many_openers_is_not_a_write() {
+    let body = "f(x) => y.rs\n".repeat(70);
+    let cmd = format!("cat > notes.md <<'EOF'\n{body}EOF\n");
+    assert_eq!(targets(&cmd), vec!["notes.md"]);
+}
+
+#[test]
+fn parse_error_fallback_reads_substitution_in_double_quotes() {
+    assert_eq!(targets("echo \"$(echo x > a.rs)\"\n)"), vec!["a.rs"]);
+    let nested_case = "echo \"$(case x in a) echo > f.rs;; esac)\"\n)";
+    assert_eq!(targets(nested_case), vec!["f.rs"]);
+}
