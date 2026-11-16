@@ -1,46 +1,37 @@
-//! Finds the files that a simple Bash command writes to.
+//! Finds the files that a Bash command writes to.
 //!
-//! This is a best-effort scan, not a shell parser. It detects:
+//! The command is parsed with [`brush_parser`], a bash-compatible parser, so
+//! quoting, comments, heredocs, subshells, `{ ...; }` groups, `if`/`for`/`while`
+//! bodies and `>(...)` process substitutions follow shell rules. It detects:
 //!
-//! - output redirects: `>`, `>>`, `>|`, `&>`, `&>>` (not `2>&1` or `>/dev/null`)
+//! - output redirects: `>`, `>>`, `>|`, `<>`, `&>`, `&>>` (not `2>&1` or `>/dev/null`)
 //! - `tee [-a] FILE...`
 //! - `sed -i[SUFFIX] ... FILE...` (also `sed -i '' ...` on macOS)
 //! - `cp` and `mv`, where the last operand is the target
 //! - `dd of=FILE`
 //!
 //! Not detected: `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`,
-//! `git apply`, and commands run through `eval` or `$(...)`. Heredoc bodies are
-//! skipped, so text inside them does not count as a write.
+//! `git apply`, and commands run through `eval`, `$(...)` or backticks.
+//! A command that does not parse as bash yields no targets: bash would refuse
+//! to run it too.
+
+use brush_parser::ast::{
+    AndOr, AndOrList, Command, CommandPrefixOrSuffixItem, CompoundCommand, CompoundList,
+    IoFileRedirectKind, IoFileRedirectTarget, IoRedirect, RedirectList, SimpleCommand,
+};
+use brush_parser::word::{self, WordPiece, WordPieceWithSource};
+use brush_parser::{Parser, ParserOptions};
 
 /// Returns the file names that `command` writes to. Names are not resolved.
 pub fn write_targets(command: &str) -> Vec<String> {
-    let text = strip_heredoc_bodies(command);
-    let tokens = tokenize(&text);
-
     let mut targets = Vec::new();
-    let mut args: Vec<String> = Vec::new();
-    let mut pending = Pending::None;
-
-    for token in tokens {
-        match token {
-            Token::Separator => {
-                analyze(&args, &mut targets);
-                args.clear();
-                pending = Pending::None;
-            }
-            Token::Word(word) => match pending {
-                Pending::Target => {
-                    targets.push(word);
-                    pending = Pending::None;
-                }
-                Pending::Skip => pending = Pending::None,
-                Pending::None => args.push(word),
-            },
-            Token::Redirect => pending = Pending::Target,
-            Token::Input | Token::Dup => pending = Pending::Skip,
+    let mut reader = std::io::BufReader::new(command.as_bytes());
+    let mut parser = Parser::new(&mut reader, &ParserOptions::default());
+    if let Ok(program) = parser.parse_program() {
+        for list in &program.complete_commands {
+            visit_list(list, &mut targets);
         }
     }
-    analyze(&args, &mut targets);
 
     targets.retain(|t| !t.is_empty() && !t.starts_with("/dev/"));
     let mut unique = Vec::new();
@@ -52,172 +43,141 @@ pub fn write_targets(command: &str) -> Vec<String> {
     unique
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pending {
-    None,
-    /// The next word is a write target.
-    Target,
-    /// The next word is not a file (for example an fd number or an input).
-    Skip,
+fn visit_list(list: &CompoundList, out: &mut Vec<String>) {
+    for item in &list.0 {
+        visit_and_or(&item.0, out);
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Token {
-    Word(String),
-    /// An output redirect such as `>` or `>>`.
-    Redirect,
-    /// An input redirect such as `<`.
-    Input,
-    /// A file descriptor duplication such as `>&`.
-    Dup,
-    /// A command separator such as `;`, `&&`, `|` or a newline.
-    Separator,
-}
-
-/// Removes the body lines of heredocs, keeping the lines that start them.
-fn strip_heredoc_bodies(command: &str) -> String {
-    let mut out = String::with_capacity(command.len());
-    let mut delimiter: Option<String> = None;
-    for line in command.lines() {
-        if let Some(end) = &delimiter {
-            if line.trim() == end {
-                delimiter = None;
-            }
-            continue;
+fn visit_and_or(list: &AndOrList, out: &mut Vec<String>) {
+    let rest = list.additional.iter().map(|next| match next {
+        AndOr::And(p) | AndOr::Or(p) => p,
+    });
+    for pipeline in std::iter::once(&list.first).chain(rest) {
+        for command in &pipeline.seq {
+            visit_command(command, out);
         }
-        out.push_str(line);
-        out.push('\n');
-        delimiter = heredoc_delimiter(line);
     }
-    out
 }
 
-fn heredoc_delimiter(line: &str) -> Option<String> {
-    let index = line.find("<<")?;
-    let rest = &line[index + 2..];
-    if rest.starts_with('<') {
-        return None; // here-string, not a heredoc
+fn visit_command(command: &Command, out: &mut Vec<String>) {
+    match command {
+        Command::Simple(simple) => visit_simple(simple, out),
+        Command::Compound(compound, redirects) => {
+            visit_compound(compound, out);
+            visit_redirects(redirects.as_ref(), out);
+        }
+        Command::Function(function) => {
+            visit_compound(&function.body.0, out);
+            visit_redirects(function.body.1.as_ref(), out);
+        }
+        Command::ExtendedTest(_, redirects) => visit_redirects(redirects.as_ref(), out),
     }
-    let rest = rest.trim_start_matches('-').trim_start();
-    let word: String = rest
-        .chars()
-        .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '|' | '&' | ')'))
+}
+
+fn visit_compound(compound: &CompoundCommand, out: &mut Vec<String>) {
+    match compound {
+        CompoundCommand::Arithmetic(_) => {}
+        CompoundCommand::ArithmeticForClause(c) => visit_list(&c.body.list, out),
+        CompoundCommand::BraceGroup(c) => visit_list(&c.list, out),
+        CompoundCommand::Subshell(c) => visit_list(&c.list, out),
+        CompoundCommand::ForClause(c) => visit_list(&c.body.list, out),
+        CompoundCommand::CaseClause(c) => {
+            for case in &c.cases {
+                if let Some(list) = &case.cmd {
+                    visit_list(list, out);
+                }
+            }
+        }
+        CompoundCommand::IfClause(c) => {
+            visit_list(&c.condition, out);
+            visit_list(&c.then, out);
+            for clause in c.elses.iter().flatten() {
+                if let Some(condition) = &clause.condition {
+                    visit_list(condition, out);
+                }
+                visit_list(&clause.body, out);
+            }
+        }
+        CompoundCommand::WhileClause(c) | CompoundCommand::UntilClause(c) => {
+            visit_list(&c.0, out);
+            visit_list(&c.1.list, out);
+        }
+        CompoundCommand::Coprocess(c) => visit_command(&c.body, out),
+    }
+}
+
+/// Looks at one simple command: its redirects, then its program and arguments.
+fn visit_simple(command: &SimpleCommand, out: &mut Vec<String>) {
+    let mut args: Vec<String> = command
+        .word_or_name
+        .iter()
+        .map(|w| unquote(&w.value))
         .collect();
-    let word = word.trim_matches(|c| c == '\'' || c == '"');
-    if word.is_empty() {
-        None
-    } else {
-        Some(word.to_string())
-    }
-}
-
-fn tokenize(text: &str) -> Vec<Token> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut tokens = Vec::new();
-    let mut word: Option<String> = None;
-    let mut i = 0;
-
-    while i < chars.len() {
-        let c = chars[i];
-        match c {
-            '\'' => {
-                let buffer = word.get_or_insert_with(String::new);
-                i += 1;
-                while i < chars.len() && chars[i] != '\'' {
-                    buffer.push(chars[i]);
-                    i += 1;
-                }
-                i += 1;
+    // A prefix `NAME=value` sets the environment. After the program name it is
+    // a plain argument, such as `dd of=FILE`.
+    let prefix = command.prefix.iter().flat_map(|p| &p.0).map(|i| (i, false));
+    let suffix = command.suffix.iter().flat_map(|s| &s.0).map(|i| (i, true));
+    for (item, is_argument) in prefix.chain(suffix) {
+        match item {
+            CommandPrefixOrSuffixItem::IoRedirect(redirect) => visit_redirect(redirect, out),
+            CommandPrefixOrSuffixItem::Word(w) => args.push(unquote(&w.value)),
+            CommandPrefixOrSuffixItem::AssignmentWord(_, w) if is_argument => {
+                args.push(unquote(&w.value));
             }
-            '"' => {
-                let buffer = word.get_or_insert_with(String::new);
-                i += 1;
-                while i < chars.len() && chars[i] != '"' {
-                    if chars[i] == '\\'
-                        && i + 1 < chars.len()
-                        && matches!(chars[i + 1], '"' | '\\' | '$' | '`')
-                    {
-                        buffer.push(chars[i + 1]);
-                        i += 2;
-                    } else {
-                        buffer.push(chars[i]);
-                        i += 1;
-                    }
-                }
-                i += 1;
-            }
-            '\\' => {
-                if i + 1 < chars.len() {
-                    word.get_or_insert_with(String::new).push(chars[i + 1]);
-                }
-                i += 2;
-            }
-            ' ' | '\t' | '\r' => {
-                flush(&mut word, &mut tokens);
-                i += 1;
-            }
-            '\n' | ';' | '|' | '(' | ')' => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Separator);
-                i += 1;
-            }
-            '&' if chars.get(i + 1) == Some(&'>') => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Redirect);
-                i += 2;
-                if chars.get(i) == Some(&'>') {
-                    i += 1;
-                }
-            }
-            '&' => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Separator);
-                i += 1;
-            }
-            '>' => {
-                // A digit word right before `>` is a file descriptor, such as `2>`.
-                let fd_prefix = word
-                    .as_deref()
-                    .is_some_and(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_digit()));
-                if fd_prefix {
-                    word = None;
-                } else {
-                    flush(&mut word, &mut tokens);
-                }
-                i += 1;
-                if chars.get(i) == Some(&'>') || chars.get(i) == Some(&'|') {
-                    i += 1;
-                }
-                if chars.get(i) == Some(&'&') {
-                    i += 1;
-                    tokens.push(Token::Dup);
-                } else {
-                    tokens.push(Token::Redirect);
-                }
-            }
-            '<' => {
-                flush(&mut word, &mut tokens);
-                tokens.push(Token::Input);
-                while chars.get(i) == Some(&'<') {
-                    i += 1;
-                }
-                if matches!(chars.get(i), Some('&') | Some('>')) {
-                    i += 1;
-                }
-            }
-            _ => {
-                word.get_or_insert_with(String::new).push(c);
-                i += 1;
-            }
+            CommandPrefixOrSuffixItem::AssignmentWord(..) => {}
+            CommandPrefixOrSuffixItem::ProcessSubstitution(_, sub) => visit_list(&sub.list, out),
         }
     }
-    flush(&mut word, &mut tokens);
-    tokens
+    analyze(&args, out);
 }
 
-fn flush(word: &mut Option<String>, tokens: &mut Vec<Token>) {
-    if let Some(w) = word.take() {
-        tokens.push(Token::Word(w));
+fn visit_redirects(redirects: Option<&RedirectList>, out: &mut Vec<String>) {
+    for redirect in redirects.iter().flat_map(|r| &r.0) {
+        visit_redirect(redirect, out);
+    }
+}
+
+fn visit_redirect(redirect: &IoRedirect, out: &mut Vec<String>) {
+    match redirect {
+        IoRedirect::File(
+            _,
+            IoFileRedirectKind::Write
+            | IoFileRedirectKind::Append
+            | IoFileRedirectKind::Clobber
+            | IoFileRedirectKind::ReadAndWrite,
+            IoFileRedirectTarget::Filename(w),
+        ) => out.push(unquote(&w.value)),
+        IoRedirect::File(_, _, IoFileRedirectTarget::ProcessSubstitution(_, sub)) => {
+            visit_list(&sub.list, out);
+        }
+        IoRedirect::OutputAndError(w, _) => out.push(unquote(&w.value)),
+        _ => {}
+    }
+}
+
+/// Removes shell quoting from a word. Expansions such as `$HOME` or `$(...)`
+/// stay as written, because they are not run.
+fn unquote(raw: &str) -> String {
+    match word::parse(raw, &ParserOptions::default()) {
+        Ok(pieces) => pieces.iter().map(|p| piece_text(raw, p)).collect(),
+        Err(_) => raw.to_string(),
+    }
+}
+
+fn piece_text(raw: &str, piece: &WordPieceWithSource) -> String {
+    match &piece.piece {
+        WordPiece::Text(s) | WordPiece::SingleQuotedText(s) | WordPiece::AnsiCQuotedText(s) => {
+            s.clone()
+        }
+        WordPiece::EscapeSequence(s) => s.strip_prefix('\\').unwrap_or(s).to_string(),
+        WordPiece::DoubleQuotedSequence(inner) | WordPiece::GettextDoubleQuotedSequence(inner) => {
+            inner.iter().map(|p| piece_text(raw, p)).collect()
+        }
+        _ => raw
+            .get(piece.start_index..piece.end_index)
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 
@@ -369,5 +329,38 @@ mod tests {
     fn plain_commands_write_nothing() {
         assert!(targets("ls -la").is_empty());
         assert!(targets("cargo test").is_empty());
+    }
+
+    #[test]
+    fn detects_writes_inside_compound_commands() {
+        assert_eq!(targets("if true; then cp a.rs b.rs; fi"), vec!["b.rs"]);
+        assert_eq!(targets("for f in a b; do cp x $f.rs; done"), vec!["$f.rs"]);
+        assert_eq!(
+            targets("while true; do echo x | tee w.rs; done"),
+            vec!["w.rs"]
+        );
+        assert_eq!(targets("{ echo a; echo b; } > out.rs"), vec!["out.rs"]);
+        assert_eq!(targets("(cd src && sed -i 's/a/b/' m.rs)"), vec!["m.rs"]);
+    }
+
+    #[test]
+    fn comment_is_not_a_write() {
+        assert!(targets("ls -la # > c.rs").is_empty());
+        assert_eq!(targets("echo hi > a.rs # > b.rs"), vec!["a.rs"]);
+    }
+
+    #[test]
+    fn ansi_c_quoted_target_is_unquoted() {
+        assert_eq!(targets("echo hi > $'src/a.rs'"), vec!["src/a.rs"]);
+    }
+
+    #[test]
+    fn detects_process_substitution_writes() {
+        assert_eq!(targets("make > >(tee build.rs)"), vec!["build.rs"]);
+    }
+
+    #[test]
+    fn unparseable_command_writes_nothing() {
+        assert!(targets("echo 'unterminated > x.rs").is_empty());
     }
 }
