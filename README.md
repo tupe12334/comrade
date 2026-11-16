@@ -255,13 +255,14 @@ If the model is unknown, `unknown_model` decides the edit. The default is `block
 
 comrade also checks some Bash commands that write files. It detects:
 
-- output redirects such as `>`, `>>`, `>|` and `&>`
+- output redirects such as `>`, `>>`, `>|`, `<>`, `&>` and `>&FILE`
 - `tee`
 - `sed -i`
-- `cp` and `mv`
+- `cp`, `mv` and `install`
 - `dd of=`
+- the commands above inside `$(...)`, backticks, `<(...)` and `>(...)`
 
-It skips heredoc bodies and `/dev/null`. It does not detect `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`, or commands run through `eval` or `$(...)`. Treat the Bash check as a guard against common cases, not as a full sandbox.
+It skips `/dev/null`, and text in a heredoc body is not a command. It does not detect `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`, or commands run through `eval`. Treat the Bash check as a guard against common cases, not as a full sandbox.
 
 ## Fail-safe
 
