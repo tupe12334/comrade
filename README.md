@@ -157,7 +157,7 @@ on_error = "allow"
 # files           Required. Glob patterns. A pattern without "/" matches the
 #                 file name. A pattern with "/" matches the path from the
 #                 project root.
-# allowed_models  Required. Model patterns. A pattern with * or ? is a glob.
+# allowed_models  Required. Model patterns. A pattern with *, ? or [ is a glob.
 #                 Any other pattern is a substring. Both ignore case.
 # message         Optional. Placeholders: {file}, {model}, {allowed}, {rule}.
 #
@@ -245,9 +245,9 @@ polyhook does not carry the model name in its hook input. comrade looks for the 
 1. `COMRADE_MODEL`, if set. This works for every agent.
 2. For Claude Code only, the session transcript named in `transcript_path`. comrade uses the model of the last assistant message.
 
-When a Claude Code call comes from a subagent, the hook input has an `agent_id`. comrade then reads the subagent transcript, at `<session>/subagents/agent-<agent_id>.jsonl`. A Haiku subagent can therefore edit files while the main session runs on Opus.
+When a Claude Code call comes from a subagent, the hook input has an `agent_id`. comrade then reads the subagent transcript, at `<session>/subagents/agent-<agent_id>.jsonl`. Here `<session>` is the session transcript path without `.jsonl`. A Haiku subagent can therefore edit files while the main session runs on Opus.
 
-If the subagent transcript is missing, the model is unknown. comrade does not use the main session model in that case.
+If the subagent transcript has no model yet, comrade reads the `model` field of `<session>/subagents/agent-<agent_id>.meta.json`. A value of `inherit` does not count. If neither file gives a model, the model is unknown. comrade does not use the main session model in that case.
 
 If the model is unknown, `unknown_model` decides the edit. The default is `block`.
 
@@ -258,10 +258,10 @@ comrade also checks some Bash commands that write files. It detects:
 - output redirects such as `>`, `>>`, `>|` and `&>`
 - `tee`
 - `sed -i`
-- `cp` and `mv`
+- `cp`, `mv` and `install`
 - `dd of=`
 
-It skips heredoc bodies and `/dev/null`. It does not detect `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`, or commands run through `eval` or `$(...)`. Treat the Bash check as a guard against common cases, not as a full sandbox.
+It skips heredoc bodies and `/dev/null`. It does not detect `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`, or commands run through `eval` or `$(...)`. With `cp -t`, `mv -t` or `install -t`, it names the last operand as the write target, not the file in the `-t` directory. Treat the Bash check as a guard against common cases, not as a full sandbox.
 
 ## Fail-safe
 
