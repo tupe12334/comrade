@@ -13,9 +13,24 @@
 //!   and in heredoc bodies that expand, analyzed as commands of their own
 //!
 //! Each word is split into pieces with `brush_parser::word`, so quotes and `$'...'`
-//! are removed as bash removes them. Not detected: `python -c`, `perl -i`,
-//! `awk -i inplace`, `curl -o`, `wget -O`, `git apply`, and commands run through
-//! `eval`. Text in a heredoc body is not a command. If any part of the input,
+//! are removed as bash removes them.
+//!
+//! Not detected:
+//!
+//! - `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`
+//! - commands run through `eval`
+//! - `bash -c` and `sh -c`
+//! - `env`, `sudo`, `command` and `nohup` wrappers, for example `env cp a src/main.rs`, `sudo tee`, `command cp`, `nohup tee`
+//! - `find -exec`
+//! - `touch`, `truncate`, `ln`, `rsync`, `patch`, `sponge` and `tar`
+//! - `cp` and `mv` with `-t` or `--target-directory`
+//! - `sed` with `--expression=` or `--file=`
+//! - `cd` in the same command
+//! - the `/dev/..` path form
+//!
+//! A substitution or variable inside a target name ($(...), $VAR, ~, globs) is not resolved.
+//!
+//! Text in a heredoc body is not a command. If any part of the input,
 //! a substitution body included, does not parse, or is too large or too nested,
 //! the whole input uses a conservative scan (see `shell_fallback`).
 

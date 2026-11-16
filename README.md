@@ -262,7 +262,22 @@ comrade also checks some Bash commands that write files. It detects:
 - `dd of=`
 - the commands above inside `$(...)`, backticks, `<(...)` and `>(...)`
 
-It skips `/dev/null`, and text in a heredoc body is not a command. It does not detect `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`, or commands run through `eval`. Treat the Bash check as a guard against common cases, not as a full sandbox.
+It skips `/dev/null`, and text in a heredoc body is not a command. It does not detect:
+
+- `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`
+- commands run through `eval`
+- `bash -c` and `sh -c`
+- `env`, `sudo`, `command` and `nohup` wrappers, for example `env cp a src/main.rs`, `sudo tee`, `command cp`, `nohup tee`
+- `find -exec`
+- `touch`, `truncate`, `ln`, `rsync`, `patch`, `sponge` and `tar`
+- `cp` and `mv` with `-t` or `--target-directory`
+- `sed` with `--expression=` or `--file=`
+- `cd` in the same command
+- the `/dev/..` path form
+
+A substitution or variable inside a target name ($(...), $VAR, ~, globs) is not resolved.
+
+Treat the Bash check as a guard against common cases, not as a full sandbox.
 
 ## Fail-safe
 
