@@ -262,7 +262,7 @@ comrade also checks some Bash commands that write files. It detects:
 - `dd of=`
 - the commands above inside `$(...)`, backticks, `<(...)` and `>(...)`
 
-It skips `/dev/null`, and text in a heredoc body is not a command. It does not detect:
+It skips `/dev/null`. Text in a heredoc body is not a command. But Bash runs `$(...)` and backticks in an unquoted heredoc body (`<<EOF`, not `<<'EOF'`). So comrade scans an unquoted heredoc body that has `$(` or a backtick. It does not detect:
 
 - `python -c`, `perl -i`, `awk -i inplace`, `curl -o`, `wget -O`, `git apply`
 - commands run through `eval`
