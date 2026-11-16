@@ -294,6 +294,10 @@ cargo test
 
 The tests never read or write your real `~/.config` or `~/.claude`.
 
+## Related projects
+
+- [moadim](https://moadim.io/) — loop engineering: build, schedule and run agent loops.
+
 ## License
 
 Licensed under either of
