@@ -25,6 +25,7 @@ pub mod input;
 pub mod model;
 pub mod response;
 mod shell_fallback;
+mod shell_words;
 pub mod shell_writes;
 pub mod targets;
 

@@ -24,6 +24,7 @@ use brush_parser::ast::{
 };
 
 use super::shell_fallback::fallback_targets;
+use super::shell_words::is_fd_word;
 
 /// Longest command, in bytes, that the parser runs on.
 const MAX_PARSED_LEN: usize = 64 * 1024;
@@ -249,8 +250,15 @@ fn walk_redirects(redirects: Option<&RedirectList>, out: &mut Vec<String>) {
 
 fn walk_redirect(redirect: &IoRedirect, out: &mut Vec<String>) {
     match redirect {
-        IoRedirect::File(_, kind, IoFileRedirectTarget::Filename(word)) if is_write(kind) => {
-            out.push(unquote(&word.value));
+        IoRedirect::File(
+            _,
+            kind,
+            IoFileRedirectTarget::Filename(word) | IoFileRedirectTarget::Duplicate(word),
+        ) => {
+            let target = unquote(&word.value);
+            if is_write(kind, &target) {
+                out.push(target);
+            }
         }
         IoRedirect::File(_, _, IoFileRedirectTarget::ProcessSubstitution(_, sub)) => {
             walk_list(&sub.list, out);
@@ -260,14 +268,17 @@ fn walk_redirect(redirect: &IoRedirect, out: &mut Vec<String>) {
     }
 }
 
-fn is_write(kind: &IoFileRedirectKind) -> bool {
-    matches!(
-        kind,
+/// True when a redirect of this kind to `target` opens a file for writing.
+/// `>&WORD` writes to WORD unless WORD names a descriptor.
+fn is_write(kind: &IoFileRedirectKind, target: &str) -> bool {
+    match kind {
         IoFileRedirectKind::Write
-            | IoFileRedirectKind::Append
-            | IoFileRedirectKind::Clobber
-            | IoFileRedirectKind::ReadAndWrite
-    )
+        | IoFileRedirectKind::Append
+        | IoFileRedirectKind::Clobber
+        | IoFileRedirectKind::ReadAndWrite => true,
+        IoFileRedirectKind::DuplicateOutput => !is_fd_word(target),
+        IoFileRedirectKind::Read | IoFileRedirectKind::DuplicateInput => false,
+    }
 }
 
 /// Removes shell quoting from one word. Falls back to the raw text.
@@ -574,5 +585,21 @@ mod tests {
             ")".repeat(depth)
         );
         assert_eq!(targets(&cmd), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn duplicate_output_to_a_file_is_a_write() {
+        assert_eq!(targets("echo x >&src/main.rs"), vec!["src/main.rs"]);
+        assert_eq!(targets("echo x >& src/main.rs"), vec!["src/main.rs"]);
+        assert!(targets("echo x >&2").is_empty());
+        assert!(targets("echo x 3>&1 1>&2 2>&3-").is_empty());
+        assert!(targets("exec 3>&-").is_empty());
+    }
+
+    #[test]
+    fn parse_error_fallback_finds_duplicate_output_to_a_file() {
+        assert_eq!(targets("echo x >&src/main.rs\n)"), vec!["src/main.rs"]);
+        assert_eq!(targets("echo x >& src/main.rs\n)"), vec!["src/main.rs"]);
+        assert!(targets("cargo build >&2\n)").is_empty());
     }
 }

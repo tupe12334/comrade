@@ -5,6 +5,7 @@
 //! command. The scan is one flat loop, so deep nesting cannot overflow the
 //! stack. It can report extra targets, which is the safe error.
 
+use super::shell_words::is_fd_word;
 use super::shell_writes::analyze;
 
 /// Adds the write targets that a flat token scan finds in `command`.
@@ -15,6 +16,7 @@ pub(super) fn fallback_targets(command: &str, out: &mut Vec<String>) {
         in_word: false,
         argv: Vec::new(),
         redirect_next: false,
+        dup_next: false,
         skip_next: false,
     };
     let mut chars = command.chars().peekable();
@@ -63,9 +65,9 @@ pub(super) fn fallback_targets(command: &str, out: &mut Vec<String>) {
                         chars.next();
                     }
                     Some('&') => {
-                        // `>&1` and `>&file`: the target starts with `&`, so it is skipped later.
+                        // `>&1` and `>&-` name a descriptor; `>&file` writes the file.
                         chars.next();
-                        scan.push('&');
+                        scan.dup_next = true;
                     }
                     _ => {}
                 }
@@ -90,6 +92,8 @@ struct Scan<'a> {
     argv: Vec<String>,
     /// The next word is a redirect target.
     redirect_next: bool,
+    /// The redirect is `>&`, so a descriptor target is not a file.
+    dup_next: bool,
     /// The next word is an input redirect operand, which is not an argument.
     skip_next: bool,
 }
@@ -111,6 +115,7 @@ impl Scan<'_> {
         self.drop_fd_digits();
         self.end_word();
         self.redirect_next = true;
+        self.dup_next = false;
         self.skip_next = false;
     }
 
@@ -122,7 +127,7 @@ impl Scan<'_> {
         self.in_word = false;
         if self.redirect_next {
             self.redirect_next = false;
-            if !word.starts_with('&') {
+            if !(std::mem::take(&mut self.dup_next) && is_fd_word(&word)) {
                 self.out.push(word);
             }
         } else if std::mem::take(&mut self.skip_next) {
@@ -138,6 +143,7 @@ impl Scan<'_> {
         analyze(&self.argv[assignments..], self.out);
         self.argv.clear();
         self.redirect_next = false;
+        self.dup_next = false;
         self.skip_next = false;
     }
 }
