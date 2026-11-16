@@ -157,7 +157,7 @@ on_error = "allow"
 # files           Required. Glob patterns. A pattern without "/" matches the
 #                 file name. A pattern with "/" matches the path from the
 #                 project root.
-# allowed_models  Required. Model patterns. A pattern with * or ? is a glob.
+# allowed_models  Required. Model patterns. A pattern with *, ? or [ is a glob.
 #                 Any other pattern is a substring. Both ignore case.
 # message         Optional. Placeholders: {file}, {model}, {allowed}, {rule}.
 #
