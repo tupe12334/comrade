@@ -320,3 +320,21 @@ fn parse_error_fallback_reads_substitution_in_double_quotes() {
     let nested_case = "echo \"$(case x in a) echo > f.rs;; esac)\"\n)";
     assert_eq!(targets(nested_case), vec!["f.rs"]);
 }
+
+#[test]
+fn parse_error_fallback_reads_substitution_in_expanding_heredoc_body() {
+    assert_eq!(targets("cat <<EOF\n$(echo x > a.rs)\nEOF\n)"), vec!["a.rs"]);
+    assert_eq!(targets("cat <<-EOF\n\t`tee b.rs`\n\tEOF\n)"), vec!["b.rs"]);
+}
+
+#[test]
+fn parse_error_fallback_skips_substitution_in_quoted_heredoc_body() {
+    assert!(targets("cat <<'EOF'\n$(echo x > a.rs)\nEOF\n)").is_empty());
+    assert!(targets("cat <<\\EOF\n`tee b.rs`\nEOF\n)").is_empty());
+}
+
+#[test]
+fn parse_error_fallback_ends_heredoc_on_delimiter_with_space() {
+    let cmd = "cat <<'E '\nx\nE \necho hi > src/main.rs\n)";
+    assert_eq!(targets(cmd), vec!["src/main.rs"]);
+}

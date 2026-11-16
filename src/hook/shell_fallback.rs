@@ -16,8 +16,9 @@ use super::shell_writes::analyze;
 /// Adds the write targets that a flat token scan finds in `command`.
 pub(super) fn fallback_targets(command: &str, out: &mut Vec<String>) {
     if !scan(command, true, out) {
-        // Double-quoted text holds a substitution, or a quote is not closed. The flat scan
-        // cannot tell text from code there, so scan again with all quoted text read as code.
+        // Double-quoted text or an expanding heredoc body holds a substitution, or a quote is
+        // not closed. The flat scan cannot tell text from code there, so scan again with all
+        // quoted text read as code.
         scan(command, false, out);
     }
 }
@@ -30,6 +31,7 @@ fn scan(command: &str, quotes_are_text: bool, out: &mut Vec<String>) -> bool {
         out,
         word: String::new(),
         in_word: false,
+        quoted: false,
         argv: Vec::new(),
         redirect_next: false,
         dup_next: false,
@@ -60,6 +62,7 @@ fn scan(command: &str, quotes_are_text: bool, out: &mut Vec<String>) -> bool {
         match c {
             '\\' => {
                 if let Some(next) = chars.next() {
+                    scan.quoted = true;
                     scan.push(next);
                 }
             }
@@ -77,15 +80,18 @@ fn scan(command: &str, quotes_are_text: bool, out: &mut Vec<String>) -> bool {
                     }
                 }
                 scan.in_word = true;
+                scan.quoted = true;
                 ansi_c(&body).chars().for_each(|c| scan.push(c));
             }
             '\'' if !double => {
                 single = quotes_are_text;
                 scan.in_word = true;
+                scan.quoted = true;
             }
             '"' => {
                 double = quotes_are_text && !double;
                 scan.in_word = true;
+                scan.quoted = true;
             }
             ' ' | '\t' if !double => scan.end_word(),
             '>' => {
@@ -119,8 +125,8 @@ fn scan(command: &str, quotes_are_text: bool, out: &mut Vec<String>) -> bool {
             '&' if chars.peek() == Some(&'>') => {}
             '\n' if quotes_are_text => {
                 scan.end_command();
-                for delimiter in std::mem::take(&mut scan.heredocs) {
-                    skip_heredoc_body(&mut chars, &delimiter);
+                for (delimiter, expands) in std::mem::take(&mut scan.heredocs) {
+                    sure &= skip_heredoc_body(&mut chars, &delimiter, expands);
                 }
             }
             '\n' | ';' | '&' | '|' | '(' | ')' | '`' => scan.end_command(),
@@ -131,12 +137,18 @@ fn scan(command: &str, quotes_are_text: bool, out: &mut Vec<String>) -> bool {
     sure && !single && !double
 }
 
-/// Consumes heredoc body lines up to and including the line that is `delimiter`.
-fn skip_heredoc_body(chars: &mut Peekable<Chars>, delimiter: &str) {
+/// Consumes heredoc body lines up to and including the line that is `delimiter`. Returns
+/// false when the body `expands` and holds `$(` or a backtick, which run commands.
+fn skip_heredoc_body(chars: &mut Peekable<Chars>, delimiter: &str, expands: bool) -> bool {
+    let mut sure = true;
     loop {
         let line: String = chars.by_ref().take_while(|&c| c != '\n').collect();
-        if line.trim() == delimiter || chars.peek().is_none() {
-            return;
+        sure &= !(expands && (line.contains("$(") || line.contains('`')));
+        // Bash ends the body on the exact line, or on the line without leading tabs for
+        // `<<-`. A trimmed match can only end the body early, which scans more text.
+        let ends = [line.as_str(), line.trim_start_matches('\t'), line.trim()];
+        if ends.contains(&delimiter) || chars.peek().is_none() {
+            return sure;
         }
     }
 }
@@ -145,6 +157,8 @@ struct Scan<'a> {
     out: &'a mut Vec<String>,
     word: String,
     in_word: bool,
+    /// The current word has a quote or a backslash.
+    quoted: bool,
     argv: Vec<String>,
     /// The next word is a redirect target.
     redirect_next: bool,
@@ -154,8 +168,9 @@ struct Scan<'a> {
     skip_next: bool,
     /// The next word is a heredoc delimiter.
     heredoc_next: bool,
-    /// Delimiters of heredocs whose bodies start after the next newline.
-    heredocs: Vec<String>,
+    /// Delimiters of heredocs whose bodies start after the next newline, and whether each
+    /// body expands, which it does when the delimiter has no quote.
+    heredocs: Vec<(String, bool)>,
 }
 
 impl Scan<'_> {
@@ -186,8 +201,9 @@ impl Scan<'_> {
         }
         let word = std::mem::take(&mut self.word);
         self.in_word = false;
+        let quoted = std::mem::take(&mut self.quoted);
         if std::mem::take(&mut self.heredoc_next) {
-            self.heredocs.push(word);
+            self.heredocs.push((word, !quoted));
         } else if self.redirect_next {
             self.redirect_next = false;
             if !(std::mem::take(&mut self.dup_next) && is_fd_word(&word)) {
