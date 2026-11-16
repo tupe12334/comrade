@@ -32,7 +32,8 @@
 //!
 //! Text in a heredoc body is not a command. If any part of the input,
 //! a substitution body included, does not parse, or is too large or too nested,
-//! the whole input uses a conservative scan (see `shell_fallback`).
+//! the whole input uses a conservative scan (see `shell_fallback`). An arithmetic
+//! command `((...))` also adds that scan, because the parser reads `( (` as `((`.
 
 use brush_parser::ast::{
     AndOr, Command, CommandPrefixOrSuffixItem, CompoundCommand, CompoundList, CompoundListItem,
@@ -56,8 +57,11 @@ const COMPOUND_KEYWORDS: [&str; 6] = ["if", "while", "until", "for", "case", "se
 /// Returns the file names that `command` writes to. Names are not resolved.
 pub fn write_targets(command: &str) -> Vec<String> {
     let mut targets = Vec::new();
-    if parsed_targets(command, 0, &mut targets).is_none() {
-        // A part did not parse. Scan the whole input, and keep what the parser found.
+    let mut arithmetic = false;
+    if parsed_targets(command, 0, &mut targets, &mut arithmetic).is_none() || arithmetic {
+        // A part did not parse, or the parser found an arithmetic command, which can be
+        // nested subshells read wrongly: `( (echo x > f) )` parses as `((...))`.
+        // Scan the whole input, and keep what the parser found.
         fallback_targets(command, &mut targets);
     }
 
@@ -72,8 +76,14 @@ pub fn write_targets(command: &str) -> Vec<String> {
 }
 
 /// Adds the targets that the parser finds in `command`. Returns `None` when a part of it,
-/// such as a substitution body, does not parse or is too large to parse.
-fn parsed_targets(command: &str, depth: usize, out: &mut Vec<String>) -> Option<()> {
+/// such as a substitution body, does not parse or is too large to parse. Sets `arithmetic`
+/// when it finds an arithmetic command.
+fn parsed_targets(
+    command: &str,
+    depth: usize,
+    out: &mut Vec<String>,
+    arithmetic: &mut bool,
+) -> Option<()> {
     if depth > MAX_SUBSTITUTION_DEPTH || too_large_to_parse(command) {
         return None;
     }
@@ -82,7 +92,12 @@ fn parsed_targets(command: &str, depth: usize, out: &mut Vec<String>) -> Option<
         &ParserOptions::default(),
     );
     let program = parser.parse_program().ok()?;
-    Walk { depth, out }.program(&program)
+    Walk {
+        depth,
+        out,
+        arithmetic,
+    }
+    .program(&program)
 }
 
 /// True when the input is long or has many openers, so the parser must not see it.
@@ -103,6 +118,8 @@ struct Walk<'a> {
     /// How many substitutions enclose this command.
     depth: usize,
     out: &'a mut Vec<String>,
+    /// Set when an arithmetic command is found, so the caller also runs the fallback scan.
+    arithmetic: &'a mut bool,
 }
 
 impl Walk<'_> {
@@ -152,7 +169,10 @@ impl Walk<'_> {
 
     fn compound(&mut self, compound: &CompoundCommand) -> Option<()> {
         match compound {
-            CompoundCommand::Arithmetic(a) => self.text(&a.expr.value).map(drop),
+            CompoundCommand::Arithmetic(a) => {
+                *self.arithmetic = true;
+                self.text(&a.expr.value).map(drop)
+            }
             CompoundCommand::ArithmeticForClause(c) => {
                 for expr in [&c.initializer, &c.condition, &c.updater]
                     .into_iter()
@@ -328,7 +348,7 @@ impl Walk<'_> {
                 }
                 WordPiece::CommandSubstitution(body)
                 | WordPiece::BackquotedCommandSubstitution(body) => {
-                    parsed_targets(body, self.depth + 1, self.out)?;
+                    parsed_targets(body, self.depth + 1, self.out, self.arithmetic)?;
                     text.push_str(source);
                 }
                 WordPiece::ParameterExpansion(_) | WordPiece::ArithmeticExpression(_) => {

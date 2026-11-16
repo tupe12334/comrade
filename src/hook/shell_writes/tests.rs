@@ -338,3 +338,24 @@ fn parse_error_fallback_ends_heredoc_on_delimiter_with_space() {
     let cmd = "cat <<'E '\nx\nE \necho hi > src/main.rs\n)";
     assert_eq!(targets(cmd), vec!["src/main.rs"]);
 }
+
+#[test]
+fn nested_subshells_read_as_arithmetic_still_find_writes() {
+    // brush-parser reads `( (` as an arithmetic command `((...))`.
+    assert_eq!(targets("( (echo x > src/main.rs) )"), vec!["src/main.rs"]);
+    assert_eq!(targets("((echo x > a.rs))"), vec!["a.rs"]);
+    assert_eq!(targets("( ( cp a b.rs ) )"), vec!["b.rs"]);
+    assert_eq!(targets("( ( (echo x > c.rs) ) )"), vec!["c.rs"]);
+    assert_eq!(targets("( ( ( ( tee d.rs ) ) ) )"), vec!["d.rs"]);
+    assert_eq!(targets("echo $( (echo x > e.rs) )"), vec!["e.rs"]);
+    assert_eq!(targets("echo \"$( ( (echo x > n.rs) ) )\""), vec!["n.rs"]);
+    assert_eq!(targets("((x=1)); echo y > a.rs"), vec!["a.rs"]);
+}
+
+#[test]
+fn plain_arithmetic_is_not_a_write() {
+    assert!(targets("((i++))").is_empty());
+    assert!(targets("((i++)); echo ok").is_empty());
+    assert!(targets("for ((i=0;i<3;i++)); do echo; done").is_empty());
+    assert!(targets("echo $((1+2))").is_empty());
+}
