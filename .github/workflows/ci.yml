@@ -34,6 +34,20 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+  msrv:
+    name: msrv (rust-version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep in sync with `rust-version` in Cargo.toml.
+      - uses: dtolnay/rust-toolchain@1.88
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --locked --all-targets
+
   linecheck:
     name: linecheck
     runs-on: ubuntu-latest
