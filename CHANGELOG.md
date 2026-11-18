@@ -3,6 +3,14 @@
 All notable changes to this project are listed here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0](https://github.com/tupe12334/comrade/compare/v0.1.0...v0.2.0) (2026-11-18)
+
+
+### Features
+
+* add cargo-deny dependency check to CI ([#13](https://github.com/tupe12334/comrade/issues/13)) ([1ba06b4](https://github.com/tupe12334/comrade/commit/1ba06b47f2d89adad61c57cdb1ce7ab4ea50357e))
+* add release-please changelog and PR title check ([#14](https://github.com/tupe12334/comrade/issues/14)) ([eb3d2a2](https://github.com/tupe12334/comrade/commit/eb3d2a25d3567ad3b252e035533c9217ba21f313))
+
 ## [Unreleased]
 
 ## [0.1.0] - 2026-11-07
