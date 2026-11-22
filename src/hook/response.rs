@@ -23,7 +23,7 @@ mod tests {
 
     #[test]
     fn claude_block_is_a_pre_tool_deny() {
-        input::read(
+        input::read_without_agent_env(
             br#"{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"/p/a.rs"}}"#,
         )
         .unwrap();
@@ -40,7 +40,7 @@ mod tests {
 
     #[test]
     fn cursor_block_is_a_deny_action() {
-        input::read(
+        input::read_without_agent_env(
             br#"{"type":"BeforeToolCall","toolCall":{"name":"edit_file","args":{"path":"/p/a.rs"}},"sessionId":"s"}"#,
         )
         .unwrap();

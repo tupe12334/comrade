@@ -38,6 +38,28 @@ pub fn read(stdin: &[u8]) -> Result<HookInput> {
     })
 }
 
+/// Parses the payload with the agent environment variables unset.
+///
+/// polyhook checks environment variables such as `CLAUDE_CODE_VERSION`
+/// before the payload shape. Tests that run inside an agent session would
+/// otherwise detect that agent instead of the one in the payload.
+#[cfg(test)]
+pub(crate) fn read_without_agent_env(stdin: &[u8]) -> Result<HookInput> {
+    temp_env::with_vars_unset(AGENT_ENV_VARS, || read(stdin))
+}
+
+/// Environment variables that polyhook reads to detect the agent.
+#[cfg(test)]
+const AGENT_ENV_VARS: [&str; 7] = [
+    "POLYHOOK_CALLER",
+    "CLAUDE_CODE_VERSION",
+    "CURSOR_SESSION_ID",
+    "WINDSURF_SESSION_ID",
+    "CLINE_SESSION_ID",
+    "AMP_SESSION_ID",
+    "GEMINI_PROJECT_DIR",
+];
+
 fn top_level_path(raw: &Value, key: &str) -> Option<PathBuf> {
     raw.get(key)
         .and_then(Value::as_str)
@@ -52,7 +74,7 @@ mod tests {
 
     #[test]
     fn claude_payload_gives_event_cwd_and_transcript() {
-        let input = read(
+        let input = read_without_agent_env(
             br#"{"hook_event_name":"PreToolUse","session_id":"s1","agent_id":"a1","transcript_path":"/t/s.jsonl","cwd":"/proj","tool_name":"Edit","tool_input":{"file_path":"/proj/a.rs"}}"#,
         )
         .unwrap();
@@ -65,21 +87,25 @@ mod tests {
 
     #[test]
     fn missing_top_level_paths_are_none() {
-        let input = read(br#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#).unwrap();
+        let input =
+            read_without_agent_env(br#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#)
+                .unwrap();
         assert!(input.cwd.is_none());
         assert!(input.transcript_path.is_none());
     }
 
     #[test]
     fn blank_paths_are_none() {
-        let input = read(br#"{"cwd":"  ","transcript_path":"","tool_name":"Bash"}"#).unwrap();
+        let input =
+            read_without_agent_env(br#"{"cwd":"  ","transcript_path":"","tool_name":"Bash"}"#)
+                .unwrap();
         assert!(input.cwd.is_none());
         assert!(input.transcript_path.is_none());
     }
 
     #[test]
     fn invalid_json_is_an_error() {
-        let err = read(b"{nope").unwrap_err();
+        let err = read_without_agent_env(b"{nope").unwrap_err();
         assert!(err.to_string().contains("JSON parse error"), "{err}");
     }
 }
