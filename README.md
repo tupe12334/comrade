@@ -93,6 +93,77 @@ The model name of other agents is not in polyhook's hook input yet. See the note
    comrade explain src/main.rs --model claude-opus-5-5
    ```
 
+## Claude Code on the web
+
+Claude Code on the web runs each session in a new cloud container. Nothing you installed in an earlier session is there. Each new container needs three things:
+
+1. The `comrade` binary on `PATH`.
+2. A config.
+3. The hook entry in the Claude Code settings.
+
+There are two ways to set this up.
+
+### Option 1: the environment setup script
+
+Use this to enforce comrade in every session that runs in a cloud environment.
+
+The setup script runs as root each time a new container is built. It runs before Claude Code starts, so Claude Code reads the hook that the script writes. To add the script, open the environment menu in the session's title bar, choose **Edit**, and paste this under **Setup script**:
+
+```sh
+cargo install comrade --locked
+comrade init
+comrade install claude --write
+comrade check
+```
+
+`comrade init` writes the default config to `/root/.config/comrade`. `comrade install claude --write` merges the hook into `/root/.claude/settings.json`.
+
+To change the rules, add more lines to the script. For example, write a `config.local.toml` with a heredoc. Or commit a `.comrade.toml` to each repository.
+
+`cargo install` builds comrade from source in every new container. This adds about 30 seconds to the start of a session.
+
+### Option 2: commit the hook to a repository
+
+Use this to enforce comrade for one repository, in the cloud and on every developer's computer.
+
+Commit a `.claude/settings.json` file to the repository:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v comrade >/dev/null || cargo install comrade --locked"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "comrade hook"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The `SessionStart` hook installs comrade when it is missing. Put the project rules in a `.comrade.toml` file in the repository root. Without a config folder, comrade uses the built-in defaults and that file.
+
+Until the install finishes, the `comrade` command does not exist. Claude Code treats a hook that fails to start as a non-blocking error, so edits in that window are not checked. Use option 1 when that is not acceptable.
+
+### The model in a cloud session
+
+comrade reads the model from the session transcript, as on a computer. See [How the model is found](#how-the-model-is-found). If the model is not found, the default config blocks the edit. Set `COMRADE_MODEL` in the environment variables of the cloud environment to use a fixed model name.
+
 ## Commands
 
 | Command | What it does |
