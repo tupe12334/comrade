@@ -34,7 +34,7 @@ mod tests {
     use crate::hook::input;
 
     fn read(json: &str) -> HookInput {
-        input::read(json.as_bytes()).unwrap()
+        input::read_without_agent_env(json.as_bytes()).unwrap()
     }
 
     #[test]

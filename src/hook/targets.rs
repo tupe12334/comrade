@@ -62,7 +62,8 @@ mod tests {
     use crate::hook::input;
 
     fn files(json: &str) -> Result<Vec<String>> {
-        let parsed = input::read(json.as_bytes()).expect("polyhook reads the payload");
+        let parsed =
+            input::read_without_agent_env(json.as_bytes()).expect("polyhook reads the payload");
         written_files(&parsed.event)
     }
 
