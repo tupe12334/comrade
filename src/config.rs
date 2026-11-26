@@ -39,6 +39,8 @@ pub struct RawConfig {
     pub enabled: Option<bool>,
     /// Action for files that no rule matches.
     pub default_action: Option<Action>,
+    /// Action for files outside any git repository. allow skips the rules; block applies them.
+    pub outside_repo: Option<Action>,
     /// Action when the editing model cannot be detected.
     pub unknown_model: Option<Action>,
     /// Message used when the model is unknown.
@@ -91,6 +93,8 @@ pub struct Config {
     pub enabled: bool,
     /// Action for files that no rule matches.
     pub default_action: Action,
+    /// Action for files outside any git repository. allow skips the rules; block applies them.
+    pub outside_repo: Action,
     /// Action when the editing model is unknown.
     pub unknown_model: Action,
     /// Message used when the model is unknown.

@@ -12,6 +12,10 @@ enabled = true
 # Action for files that no rule matches. "allow" or "block".
 default_action = "allow"
 
+# Action for files outside any git repository, such as a scratch folder in
+# /tmp. "allow" skips the rules for them. "block" applies the rules as usual.
+outside_repo = "allow"
+
 # Action when the editing model cannot be detected. "allow" or "block".
 unknown_model = "block"
 

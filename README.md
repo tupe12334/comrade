@@ -139,6 +139,10 @@ enabled = true
 # Action for files that no rule matches. "allow" or "block".
 default_action = "allow"
 
+# Action for files outside any git repository, such as a scratch folder in
+# /tmp. "allow" skips the rules for them. "block" applies the rules as usual.
+outside_repo = "allow"
+
 # Action when the editing model cannot be detected. "allow" or "block".
 unknown_model = "block"
 
@@ -216,11 +220,27 @@ The first enabled rule whose `files` match decides the edit.
 | --- | --- | --- |
 | `enabled` | `true` | Turns the whole hook on or off. |
 | `default_action` | `"allow"` | Action for files that no rule matches. |
+| `outside_repo` | `"allow"` | Action for files outside any git repository, such as a scratch folder in `/tmp`. |
 | `unknown_model` | `"block"` | Action when the model cannot be found. |
 | `unknown_model_message` | see default config | Text for the agent when the model is unknown. |
 | `on_error` | `"allow"` | Action when the hook fails, for example on bad input or a broken config. |
 
 `"allow"` lets the edit happen. `"block"` stops it.
+
+`outside_repo` applies only to file tools (Write, Edit, MultiEdit, NotebookEdit). Shell commands (Bash) always use the rules, so `outside_repo` never lets a shell write slip past them. With `"allow"`, a file tool may write a file that is outside any git repository without the rules applying. With `"block"`, the rules apply to every file, as usual.
+
+A file counts as outside a repository only when all of these hold:
+
+- The path is absolute, and it is not under `/proc`, `/dev` or `/sys`.
+- Its parent folder exists. The parent is resolved with `canonicalize`, so symlinks and `..` are resolved by the OS first.
+- Neither the path as written nor the resolved path has a `.git` ancestor. A `.git` can be a folder or a file (worktrees and submodules).
+- An existing file has one hard link. A file with more links may be a repo file under another name.
+
+If a check fails, or the path cannot be resolved, the rules apply. Fails closed.
+
+Only the user config (the built-in defaults, `config.toml` and `config.local.toml`) sets `outside_repo`. A project `.comrade.toml` ignores it, so a repo cannot turn the guard off.
+
+To write a scratch script, use the Write tool, not a shell redirect. The Write tool is exempt outside a repo. A `cat >` or `echo >` in Bash is not.
 
 ## Sync the config folder with git
 

@@ -6,7 +6,16 @@ use globset::{GlobBuilder, GlobMatcher};
 
 use crate::config::{Action, Config, RuleSpec};
 use crate::error::{Error, Result};
+use crate::paths;
 use crate::template;
+
+/// True when `outside_repo` lets the rules skip `file`.
+///
+/// Only file-tool targets may call this. Shell targets always keep the rules.
+/// Used by the hook and `explain`.
+pub fn outside_repo_skips(outside_repo: Action, file: &Path) -> bool {
+    outside_repo == Action::Allow && paths::outside_any_repo(file)
+}
 
 /// Message used when `default_action` blocks a file that no rule covers.
 const NO_RULE_BLOCK_MESSAGE: &str =

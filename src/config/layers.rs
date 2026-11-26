@@ -37,16 +37,20 @@ pub fn load_layers(options: &LoadOptions) -> Result<Vec<Layer>> {
         raw: parse_text(DEFAULT_CONFIG_TEXT, "built-in defaults")?,
     }];
 
-    let mut paths = vec![
+    let user_paths = [
         options.config_dir.join(CONFIG_FILE),
         options.config_dir.join(LOCAL_CONFIG_FILE),
     ];
-    if let Some(root) = &options.project_root {
-        paths.push(root.join(PROJECT_FILE));
+    for path in user_paths {
+        if let Some(layer) = read_layer(&path)? {
+            layers.push(layer);
+        }
     }
 
-    for path in paths {
-        if let Some(layer) = read_layer(&path)? {
+    if let Some(root) = &options.project_root {
+        if let Some(mut layer) = read_layer(&root.join(PROJECT_FILE))? {
+            // A repo must not turn its own outside-repo guard off.
+            layer.raw.outside_repo = None;
             layers.push(layer);
         }
     }
@@ -86,6 +90,7 @@ fn parse_text(text: &str, source: &str) -> Result<RawConfig> {
 pub fn merge(layers: &[Layer]) -> Result<Config> {
     let mut enabled = None;
     let mut default_action = None;
+    let mut outside_repo = None;
     let mut unknown_model = None;
     let mut unknown_model_message = None;
     let mut on_error = None;
@@ -94,6 +99,7 @@ pub fn merge(layers: &[Layer]) -> Result<Config> {
     for (rank, layer) in layers.iter().enumerate() {
         enabled = layer.raw.enabled.or(enabled);
         default_action = layer.raw.default_action.or(default_action);
+        outside_repo = layer.raw.outside_repo.or(outside_repo);
         unknown_model = layer.raw.unknown_model.or(unknown_model);
         on_error = layer.raw.on_error.or(on_error);
         if let Some(message) = &layer.raw.unknown_model_message {
@@ -120,6 +126,7 @@ pub fn merge(layers: &[Layer]) -> Result<Config> {
     Ok(Config {
         enabled: enabled.unwrap_or(true),
         default_action: default_action.unwrap_or(Action::Allow),
+        outside_repo: outside_repo.unwrap_or(Action::Allow),
         unknown_model: unknown_model.unwrap_or(Action::Block),
         unknown_model_message: unknown_model_message
             .unwrap_or_else(|| FALLBACK_UNKNOWN_MODEL_MESSAGE.to_string()),

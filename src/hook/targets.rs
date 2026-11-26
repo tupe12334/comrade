@@ -22,6 +22,11 @@ const UNMAPPED_EDIT_TOOLS: &[&str] = &["MultiEdit", "NotebookEdit"];
 /// Input keys that can hold the path of the file a tool writes.
 const PATH_KEYS: &[&str] = &["file_path", "path", "notebook_path", "target_file"];
 
+/// True when the event is a shell call. Its targets are never exempt from the rules.
+pub fn is_shell(event: &HookEvent) -> bool {
+    event.tool.as_deref() == Some("bash")
+}
+
 /// Returns the paths that the event writes to, as the agent sent them.
 ///
 /// Returns an empty list when the event writes no file. Relative paths are
