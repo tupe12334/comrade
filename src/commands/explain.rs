@@ -2,10 +2,9 @@
 
 use std::path::Path;
 
-use crate::config::{self, Action, LoadOptions};
+use crate::config::{self, LoadOptions};
 use crate::error::Result;
-use crate::paths;
-use crate::rules::{Engine, Evaluation, Verdict};
+use crate::rules::{outside_repo_skips, Engine, Evaluation, Verdict};
 
 /// Explains the decision for `file` and `model`. Returns text for the terminal.
 ///
@@ -25,7 +24,7 @@ pub fn explain(
     } else {
         cwd.join(file)
     };
-    let evaluation = if merged.outside_repo == Action::Allow && !paths::in_git_repo(&absolute) {
+    let evaluation = if outside_repo_skips(merged.outside_repo, &absolute) {
         Evaluation {
             file: absolute.display().to_string(),
             model: model.map(str::to_string),
@@ -107,10 +106,9 @@ mod tests {
 
     #[test]
     fn explains_allow_outside_repo() {
-        let tmp = tempfile::tempdir().unwrap();
-        if paths::in_git_repo(&tmp.path().join("probe")) {
+        let Some(tmp) = crate::paths::git_free_tempdir() else {
             return;
-        }
+        };
         let options = LoadOptions {
             config_dir: tmp.path().to_path_buf(),
             project_root: None,

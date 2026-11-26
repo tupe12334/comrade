@@ -37,16 +37,20 @@ pub fn load_layers(options: &LoadOptions) -> Result<Vec<Layer>> {
         raw: parse_text(DEFAULT_CONFIG_TEXT, "built-in defaults")?,
     }];
 
-    let mut paths = vec![
+    let user_paths = [
         options.config_dir.join(CONFIG_FILE),
         options.config_dir.join(LOCAL_CONFIG_FILE),
     ];
-    if let Some(root) = &options.project_root {
-        paths.push(root.join(PROJECT_FILE));
+    for path in user_paths {
+        if let Some(layer) = read_layer(&path)? {
+            layers.push(layer);
+        }
     }
 
-    for path in paths {
-        if let Some(layer) = read_layer(&path)? {
+    if let Some(root) = &options.project_root {
+        if let Some(mut layer) = read_layer(&root.join(PROJECT_FILE))? {
+            // A repo must not turn its own outside-repo guard off.
+            layer.raw.outside_repo = None;
             layers.push(layer);
         }
     }

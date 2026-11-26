@@ -227,7 +227,13 @@ The first enabled rule whose `files` match decides the edit.
 
 `"allow"` lets the edit happen. `"block"` stops it.
 
-`outside_repo` applies to a file with no git ancestor. A folder counts as a repository when it holds a `.git` entry. With `"allow"`, comrade skips the rules for such a file, so agents can write scratch scripts freely. With `"block"`, the rules apply to every file, as usual.
+`outside_repo` applies to a file with no git ancestor. A folder counts as a repository when it holds a `.git` entry, which can be a folder or a file (worktrees and submodules). The path is normalized (`..` is removed) and checked both as written and with symlinks resolved. A symlink into a repo therefore counts as inside it. With `"allow"`, comrade skips the rules for such a file, so agents can write scratch scripts freely. With `"block"`, the rules apply to every file, as usual.
+
+Limits:
+
+- Only the user config (the built-in defaults, `config.toml` and `config.local.toml`) sets `outside_repo`. A project `.comrade.toml` ignores it.
+- Bash targets fail closed. A target that holds `~`, `$`, a backtick, a glob or a brace is not expanded, so the rules apply. A command that has `cd`, `pushd`, `popd`, or a target-folder option (`-t`, `--target-directory`) also keeps the rules for all its targets.
+- Edit and Write paths are used as sent. Comrade does not expand `~` in them.
 
 ## Sync the config folder with git
 

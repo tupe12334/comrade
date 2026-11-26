@@ -1,6 +1,7 @@
 //! Locations of the config folder and of project config files.
 
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
 
 use etcetera::BaseStrategy;
 
@@ -59,9 +60,17 @@ pub fn project_root(start: &Path) -> PathBuf {
 
 /// Returns true when `file` sits inside a git repository.
 ///
-/// Walks up from the parent folder, so the file need not exist yet. A folder
-/// counts as a repository when it holds a `.git` entry.
+/// The path is normalized (`..` removed) and then checked twice: as written,
+/// and with symlinks resolved. A symlink into a repo therefore counts as inside
+/// it, and a symlink out of a repo does not hide the repo. A folder counts as a
+/// repository when it holds a `.git` entry, a file or a folder.
 pub fn in_git_repo(file: &Path) -> bool {
+    let lexical = normalize(file);
+    has_git_ancestor(&lexical) || has_git_ancestor(&resolve_symlinks(&lexical))
+}
+
+/// Walks up from the parent folder, so the file need not exist yet.
+fn has_git_ancestor(file: &Path) -> bool {
     let mut current = file.parent();
     while let Some(dir) = current {
         if dir.join(".git").exists() {
@@ -72,14 +81,61 @@ pub fn in_git_repo(file: &Path) -> bool {
     false
 }
 
+/// Removes `.` and resolves `..` by text. Does not touch the disk.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Canonicalizes the deepest existing ancestor and joins the rest back on.
+///
+/// The file itself may be missing. A symlink in any existing part is followed.
+fn resolve_symlinks(path: &Path) -> PathBuf {
+    let mut rest: Vec<&OsStr> = Vec::new();
+    let mut current = path;
+    loop {
+        if let Ok(real) = current.canonicalize() {
+            return rest.iter().rev().fold(real, |acc, name| acc.join(name));
+        }
+        match (current.file_name(), current.parent()) {
+            (Some(name), Some(parent)) => {
+                rest.push(name);
+                current = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
+/// Returns a temp folder that has no `.git` above it, or prints a skip note.
+///
+/// Tests that assert "outside a repo" need this. On a machine where the temp
+/// folder sits inside a repo, those tests skip, and the note says so.
+#[cfg(test)]
+pub(crate) fn git_free_tempdir() -> Option<tempfile::TempDir> {
+    let tmp = tempfile::tempdir().unwrap();
+    if has_git_ancestor(&tmp.path().join("probe")) {
+        eprintln!(
+            "SKIPPED: a .git sits above {}. Outside-repo assertions did not run.",
+            tmp.path().display()
+        );
+        return None;
+    }
+    Some(tmp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// True when no folder above `dir` holds `.git`, so a test can assert on `dir`.
-    fn no_git_above(dir: &Path) -> bool {
-        !in_git_repo(&dir.join("probe"))
-    }
 
     #[test]
     fn file_in_nested_git_repo_is_in_repo() {
@@ -91,14 +147,74 @@ mod tests {
     }
 
     #[test]
-    fn file_without_git_ancestor_is_outside_repo() {
+    fn git_file_counts_as_repo() {
+        // A worktree or submodule holds a `.git` file, not a folder.
         let tmp = tempfile::tempdir().unwrap();
-        if !no_git_above(tmp.path()) {
+        let root = tmp.path().join("worktree");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(".git"), "gitdir: /elsewhere/.git/worktrees/w\n").unwrap();
+        assert!(in_git_repo(&root.join("src/step.sh")));
+    }
+
+    #[test]
+    fn file_without_git_ancestor_is_outside_repo() {
+        let Some(tmp) = git_free_tempdir() else {
             return;
-        }
+        };
         let plain = tmp.path().join("scratch");
         std::fs::create_dir_all(&plain).unwrap();
         assert!(!in_git_repo(&plain.join("step.sh")));
+    }
+
+    #[test]
+    fn dotdot_is_resolved_before_the_walk() {
+        let Some(tmp) = git_free_tempdir() else {
+            return;
+        };
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        // Textually this sits under repo/src, but it resolves to the temp folder.
+        assert!(!in_git_repo(&root.join("src/../../outside.sh")));
+        assert!(in_git_repo(&root.join("src/../lib.rs")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dir_symlink_into_repo_counts_as_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(root.join("src"), &link).unwrap();
+        assert!(in_git_repo(&link.join("step.sh")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_symlink_into_repo_counts_as_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join("x.rs"), "").unwrap();
+        let link = tmp.path().join("a.rs");
+        std::os::unix::fs::symlink(root.join("x.rs"), &link).unwrap();
+        assert!(in_git_repo(&link));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_out_of_repo_does_not_hide_the_real_path() {
+        // The link sits outside any repo, but it points into one.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        let link = tmp.path().join("scratch-link");
+        std::os::unix::fs::symlink(root.join("src"), &link).unwrap();
+        assert!(in_git_repo(&link.join("deep/new.rs")));
     }
 
     #[test]

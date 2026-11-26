@@ -19,7 +19,7 @@ use crate::agents;
 use crate::config::{self, Action, LoadOptions};
 use crate::error::{Error, Result};
 use crate::paths;
-use crate::rules::{Engine, Verdict};
+use crate::rules::{outside_repo_skips, Engine, Verdict};
 
 pub mod input;
 pub mod model;
@@ -107,9 +107,10 @@ fn decide(stdin: &[u8], options: &HookOptions) -> Result<HookOutcome> {
     let engine = Engine::new(&config)?;
     let model = model::detect(&input, options.model_override.as_deref());
 
-    for raw in &files {
-        let file = absolute(raw, cwd.as_deref());
-        if config.outside_repo == Action::Allow && !paths::in_git_repo(&file) {
+    for target in &files {
+        let file = absolute(&target.path, cwd.as_deref());
+        // An unresolved Bash target keeps the rules, so it cannot escape them.
+        if target.exact && outside_repo_skips(config.outside_repo, &file) {
             continue;
         }
         let evaluation = engine.evaluate(&file, root.as_deref(), model.as_deref());
@@ -237,12 +238,24 @@ mod tests {
         run(payload.as_bytes(), &options)
     }
 
+    /// Runs a tool call by an Opus model, with `cwd` as the session folder.
+    fn opus_run(tool: &str, input: &str, cwd: &Path, config_dir: &Path) -> HookOutcome {
+        let options = HookOptions {
+            model_override: Some("claude-opus-5-5".to_string()),
+            ..options(config_dir)
+        };
+        let payload = format!(
+            r#"{{"tool_name":"{tool}","tool_input":{input},"cwd":"{}"}}"#,
+            cwd.display()
+        );
+        run(payload.as_bytes(), &options)
+    }
+
     #[test]
     fn opus_write_outside_repo_is_allowed_by_default() {
-        let tmp = tempfile::tempdir().unwrap();
-        if paths::in_git_repo(&tmp.path().join("probe")) {
+        let Some(tmp) = paths::git_free_tempdir() else {
             return;
-        }
+        };
         let config_dir = tmp.path().join("config");
         let scratch = tmp.path().join("scratch");
         std::fs::create_dir_all(&scratch).unwrap();
@@ -264,16 +277,102 @@ mod tests {
 
     #[test]
     fn opus_write_outside_repo_is_blocked_when_outside_repo_is_block() {
-        let tmp = tempfile::tempdir().unwrap();
-        if paths::in_git_repo(&tmp.path().join("probe")) {
+        let Some(tmp) = paths::git_free_tempdir() else {
             return;
-        }
+        };
         let config_dir = tmp.path().join("config");
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::write(config_dir.join("config.toml"), "outside_repo = \"block\"\n").unwrap();
         let scratch = tmp.path().join("scratch");
         std::fs::create_dir_all(&scratch).unwrap();
         let outcome = opus_write(&scratch.join("step.sh"), &config_dir);
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
+    }
+
+    #[test]
+    fn bash_tilde_target_outside_repo_is_blocked() {
+        // `~` is not expanded, so the path would resolve under the cwd. It must stay blocked.
+        let Some(tmp) = paths::git_free_tempdir() else {
+            return;
+        };
+        let scratch = tmp.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let outcome = opus_run(
+            "Bash",
+            r#"{"command":"echo x > ~/dev/git/github/tupe12334/comrade/src/zz.rs"}"#,
+            &scratch,
+            &tmp.path().join("config"),
+        );
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
+    }
+
+    #[test]
+    fn bash_variable_target_outside_repo_is_blocked() {
+        let Some(tmp) = paths::git_free_tempdir() else {
+            return;
+        };
+        let scratch = tmp.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let outcome = opus_run(
+            "Bash",
+            r#"{"command":"echo x > $HOME/repo/zz.rs"}"#,
+            &scratch,
+            &tmp.path().join("config"),
+        );
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
+    }
+
+    #[test]
+    fn bash_cd_then_tee_is_blocked() {
+        // Without the cd check, src/main.rs would resolve under the scratch cwd and pass.
+        let Some(tmp) = paths::git_free_tempdir() else {
+            return;
+        };
+        let scratch = tmp.path().join("scratch");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        let command = format!("cd {} && tee src/main.rs", repo.display());
+        let outcome = opus_run(
+            "Bash",
+            &format!(r#"{{"command":"{command}"}}"#),
+            &scratch,
+            &tmp.path().join("config"),
+        );
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
+    }
+
+    #[test]
+    fn bash_literal_absolute_target_outside_repo_is_allowed() {
+        let Some(tmp) = paths::git_free_tempdir() else {
+            return;
+        };
+        let scratch = tmp.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let command = format!(r#"{{"command":"echo x > {}/step.sh"}}"#, scratch.display());
+        let outcome = opus_run("Bash", &command, &scratch, &tmp.path().join("config"));
+        assert_eq!(outcome, HookOutcome::allow());
+    }
+
+    #[test]
+    fn project_config_cannot_turn_the_guard_off() {
+        // The user config blocks outside-repo edits. A project file must not allow them.
+        let Some(tmp) = paths::git_free_tempdir() else {
+            return;
+        };
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("config.toml"), "outside_repo = \"block\"\n").unwrap();
+        let scratch = tmp.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(scratch.join(".comrade.toml"), "outside_repo = \"allow\"\n").unwrap();
+        let outcome = opus_run(
+            "Write",
+            &format!(r#"{{"file_path":"{}"}}"#, scratch.join("step.sh").display()),
+            &scratch,
+            &config_dir,
+        );
         assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
     }
 
