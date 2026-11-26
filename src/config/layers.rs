@@ -86,6 +86,7 @@ fn parse_text(text: &str, source: &str) -> Result<RawConfig> {
 pub fn merge(layers: &[Layer]) -> Result<Config> {
     let mut enabled = None;
     let mut default_action = None;
+    let mut outside_repo = None;
     let mut unknown_model = None;
     let mut unknown_model_message = None;
     let mut on_error = None;
@@ -94,6 +95,7 @@ pub fn merge(layers: &[Layer]) -> Result<Config> {
     for (rank, layer) in layers.iter().enumerate() {
         enabled = layer.raw.enabled.or(enabled);
         default_action = layer.raw.default_action.or(default_action);
+        outside_repo = layer.raw.outside_repo.or(outside_repo);
         unknown_model = layer.raw.unknown_model.or(unknown_model);
         on_error = layer.raw.on_error.or(on_error);
         if let Some(message) = &layer.raw.unknown_model_message {
@@ -120,6 +122,7 @@ pub fn merge(layers: &[Layer]) -> Result<Config> {
     Ok(Config {
         enabled: enabled.unwrap_or(true),
         default_action: default_action.unwrap_or(Action::Allow),
+        outside_repo: outside_repo.unwrap_or(Action::Allow),
         unknown_model: unknown_model.unwrap_or(Action::Block),
         unknown_model_message: unknown_model_message
             .unwrap_or_else(|| FALLBACK_UNKNOWN_MODEL_MESSAGE.to_string()),

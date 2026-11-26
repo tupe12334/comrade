@@ -2,9 +2,10 @@
 
 use std::path::Path;
 
-use crate::config::{self, LoadOptions};
+use crate::config::{self, Action, LoadOptions};
 use crate::error::Result;
-use crate::rules::{Engine, Verdict};
+use crate::paths;
+use crate::rules::{Engine, Evaluation, Verdict};
 
 /// Explains the decision for `file` and `model`. Returns text for the terminal.
 ///
@@ -24,7 +25,18 @@ pub fn explain(
     } else {
         cwd.join(file)
     };
-    let evaluation = engine.evaluate(&absolute, options.project_root.as_deref(), model);
+    let evaluation = if merged.outside_repo == Action::Allow && !paths::in_git_repo(&absolute) {
+        Evaluation {
+            file: absolute.display().to_string(),
+            model: model.map(str::to_string),
+            rule: None,
+            model_pattern: None,
+            reason: "file is outside any git repository; outside_repo is allow".to_string(),
+            verdict: Verdict::Allow,
+        }
+    } else {
+        engine.evaluate(&absolute, options.project_root.as_deref(), model)
+    };
 
     let mut out = String::new();
     out.push_str(&format!("file:          {}\n", evaluation.file));
@@ -58,9 +70,18 @@ pub fn explain(
 mod tests {
     use super::*;
 
+    /// Makes a temp folder with a `.git` entry, so its files count as repo files.
+    fn repo_dir(tmp: &Path) -> std::path::PathBuf {
+        let repo = tmp.join("proj");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        repo
+    }
+
     #[test]
     fn explains_block_for_opus_on_rust() {
         let tmp = tempfile::tempdir().unwrap();
+        let repo = repo_dir(tmp.path());
         let options = LoadOptions {
             config_dir: tmp.path().to_path_buf(),
             project_root: None,
@@ -69,25 +90,53 @@ mod tests {
             &options,
             Path::new("src/lib.rs"),
             Some("claude-opus-5-5"),
-            Path::new("/proj"),
+            &repo,
         )
         .unwrap();
-        assert!(text.contains("file:          /proj/src/lib.rs"), "{text}");
+        assert!(
+            text.contains(&format!(
+                "file:          {}",
+                repo.join("src/lib.rs").display()
+            )),
+            "{text}"
+        );
         assert!(text.contains("rule:          source-code"), "{text}");
         assert!(text.contains("decision:      block"), "{text}");
         assert!(text.contains("the Party does not type."), "{text}");
     }
 
     #[test]
-    fn explains_allow_for_haiku_on_rust() {
+    fn explains_allow_outside_repo() {
         let tmp = tempfile::tempdir().unwrap();
+        if paths::in_git_repo(&tmp.path().join("probe")) {
+            return;
+        }
         let options = LoadOptions {
             config_dir: tmp.path().to_path_buf(),
             project_root: None,
         };
         let text = explain(
             &options,
-            Path::new("/proj/a.rs"),
+            &tmp.path().join("step.sh"),
+            Some("claude-opus-5-5"),
+            Path::new("/"),
+        )
+        .unwrap();
+        assert!(text.contains("decision:      allow"), "{text}");
+        assert!(text.contains("outside_repo is allow"), "{text}");
+    }
+
+    #[test]
+    fn explains_allow_for_haiku_on_rust() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = repo_dir(tmp.path());
+        let options = LoadOptions {
+            config_dir: tmp.path().to_path_buf(),
+            project_root: None,
+        };
+        let text = explain(
+            &options,
+            &repo.join("a.rs"),
             Some("claude-haiku-5-5"),
             Path::new("/"),
         )

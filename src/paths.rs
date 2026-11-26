@@ -57,9 +57,49 @@ pub fn project_root(start: &Path) -> PathBuf {
     }
 }
 
+/// Returns true when `file` sits inside a git repository.
+///
+/// Walks up from the parent folder, so the file need not exist yet. A folder
+/// counts as a repository when it holds a `.git` entry.
+pub fn in_git_repo(file: &Path) -> bool {
+    let mut current = file.parent();
+    while let Some(dir) = current {
+        if dir.join(".git").exists() {
+            return true;
+        }
+        current = dir.parent();
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// True when no folder above `dir` holds `.git`, so a test can assert on `dir`.
+    fn no_git_above(dir: &Path) -> bool {
+        !in_git_repo(&dir.join("probe"))
+    }
+
+    #[test]
+    fn file_in_nested_git_repo_is_in_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        assert!(in_git_repo(&root.join("src/deep/step.sh")));
+    }
+
+    #[test]
+    fn file_without_git_ancestor_is_outside_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        if !no_git_above(tmp.path()) {
+            return;
+        }
+        let plain = tmp.path().join("scratch");
+        std::fs::create_dir_all(&plain).unwrap();
+        assert!(!in_git_repo(&plain.join("step.sh")));
+    }
 
     #[test]
     fn explicit_dir_wins() {

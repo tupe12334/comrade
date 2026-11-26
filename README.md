@@ -139,6 +139,10 @@ enabled = true
 # Action for files that no rule matches. "allow" or "block".
 default_action = "allow"
 
+# Action for files outside any git repository, such as a scratch folder in
+# /tmp. "allow" skips the rules for them. "block" applies the rules as usual.
+outside_repo = "allow"
+
 # Action when the editing model cannot be detected. "allow" or "block".
 unknown_model = "block"
 
@@ -216,11 +220,14 @@ The first enabled rule whose `files` match decides the edit.
 | --- | --- | --- |
 | `enabled` | `true` | Turns the whole hook on or off. |
 | `default_action` | `"allow"` | Action for files that no rule matches. |
+| `outside_repo` | `"allow"` | Action for files outside any git repository, such as a scratch folder in `/tmp`. |
 | `unknown_model` | `"block"` | Action when the model cannot be found. |
 | `unknown_model_message` | see default config | Text for the agent when the model is unknown. |
 | `on_error` | `"allow"` | Action when the hook fails, for example on bad input or a broken config. |
 
 `"allow"` lets the edit happen. `"block"` stops it.
+
+`outside_repo` applies to a file with no git ancestor. A folder counts as a repository when it holds a `.git` entry. With `"allow"`, comrade skips the rules for such a file, so agents can write scratch scripts freely. With `"block"`, the rules apply to every file, as usual.
 
 ## Sync the config folder with git
 

@@ -109,6 +109,9 @@ fn decide(stdin: &[u8], options: &HookOptions) -> Result<HookOutcome> {
 
     for raw in &files {
         let file = absolute(raw, cwd.as_deref());
+        if config.outside_repo == Action::Allow && !paths::in_git_repo(&file) {
+            continue;
+        }
         let evaluation = engine.evaluate(&file, root.as_deref(), model.as_deref());
         if let Verdict::Block { message } = evaluation.verdict {
             return Ok(HookOutcome {
@@ -219,6 +222,59 @@ mod tests {
         std::fs::write(tmp.path().join("config.toml"), "on_error = [").unwrap();
         let outcome = run(b"{nope", &options(tmp.path()));
         assert_eq!(outcome.exit_code, 0);
+    }
+
+    /// Runs a Write by an Opus model on `file`.
+    fn opus_write(file: &Path, config_dir: &Path) -> HookOutcome {
+        let options = HookOptions {
+            model_override: Some("claude-opus-5-5".to_string()),
+            ..options(config_dir)
+        };
+        let payload = format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}"}}}}"#,
+            file.display()
+        );
+        run(payload.as_bytes(), &options)
+    }
+
+    #[test]
+    fn opus_write_outside_repo_is_allowed_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        if paths::in_git_repo(&tmp.path().join("probe")) {
+            return;
+        }
+        let config_dir = tmp.path().join("config");
+        let scratch = tmp.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let outcome = opus_write(&scratch.join("step.sh"), &config_dir);
+        assert_eq!(outcome, HookOutcome::allow());
+    }
+
+    #[test]
+    fn opus_write_inside_repo_is_blocked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join("config");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        let outcome = opus_write(&repo.join("step.sh"), &config_dir);
+        assert_eq!(outcome.exit_code, 0);
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
+    }
+
+    #[test]
+    fn opus_write_outside_repo_is_blocked_when_outside_repo_is_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        if paths::in_git_repo(&tmp.path().join("probe")) {
+            return;
+        }
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(config_dir.join("config.toml"), "outside_repo = \"block\"\n").unwrap();
+        let scratch = tmp.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let outcome = opus_write(&scratch.join("step.sh"), &config_dir);
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
     }
 
     #[test]
