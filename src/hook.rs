@@ -107,10 +107,11 @@ fn decide(stdin: &[u8], options: &HookOptions) -> Result<HookOutcome> {
     let engine = Engine::new(&config)?;
     let model = model::detect(&input, options.model_override.as_deref());
 
-    for target in &files {
-        let file = absolute(&target.path, cwd.as_deref());
-        // An unresolved Bash target keeps the rules, so it cannot escape them.
-        if target.exact && outside_repo_skips(config.outside_repo, &file) {
+    // Shell targets are never exempt. Their paths are not resolved the way the shell does.
+    let may_skip = !targets::is_shell(&input.event);
+    for raw in &files {
+        let file = absolute(raw, cwd.as_deref());
+        if may_skip && outside_repo_skips(config.outside_repo, &file) {
             continue;
         }
         let evaluation = engine.evaluate(&file, root.as_deref(), model.as_deref());
@@ -344,15 +345,106 @@ mod tests {
     }
 
     #[test]
-    fn bash_literal_absolute_target_outside_repo_is_allowed() {
+    fn bash_write_outside_repo_is_blocked() {
+        // Shell targets always keep the rules, even for a literal scratch path.
         let Some(tmp) = paths::git_free_tempdir() else {
             return;
         };
         let scratch = tmp.path().join("scratch");
         std::fs::create_dir_all(&scratch).unwrap();
-        let command = format!(r#"{{"command":"echo x > {}/step.sh"}}"#, scratch.display());
+        let command = format!(r#"{{"command":"cat > {}/step.sh"}}"#, scratch.display());
         let outcome = opus_run("Bash", &command, &scratch, &tmp.path().join("config"));
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
+    }
+
+    #[test]
+    fn write_tool_outside_repo_is_allowed() {
+        let Some(tmp) = paths::git_free_tempdir() else {
+            return;
+        };
+        let scratch = tmp.path().join("scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let outcome = opus_run(
+            "Write",
+            &format!(r#"{{"file_path":"{}"}}"#, scratch.join("step.sh").display()),
+            &scratch,
+            &tmp.path().join("config"),
+        );
         assert_eq!(outcome, HookOutcome::allow());
+    }
+
+    /// Runs a Write by an Opus model on `path` and returns the outcome.
+    fn opus_write_to(path: &Path, cwd: &Path, config_dir: &Path) -> HookOutcome {
+        opus_run(
+            "Write",
+            &format!(r#"{{"file_path":"{}"}}"#, path.display()),
+            cwd,
+            config_dir,
+        )
+    }
+
+    #[test]
+    fn write_inside_repo_is_blocked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        let outcome = opus_write_to(&repo.join("src/x.rs"), &repo, &tmp.path().join("config"));
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_through_symlink_dotdot_into_repo_is_blocked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        let lnk = tmp.path().join("lnk");
+        std::os::unix::fs::symlink(repo.join("src"), &lnk).unwrap();
+        let cwd = tmp.path().join("scratch");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let outcome = opus_write_to(&lnk.join("../a.rs"), &cwd, &tmp.path().join("config"));
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_to_hard_link_of_repo_file_is_blocked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        std::fs::write(repo.join("src/h.rs"), "x").unwrap();
+        let hl = tmp.path().join("hl.rs");
+        std::fs::hard_link(repo.join("src/h.rs"), &hl).unwrap();
+        let outcome = opus_write_to(&hl, tmp.path(), &tmp.path().join("config"));
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_under_proc_is_blocked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outcome = opus_write_to(
+            Path::new("/proc/self/cwd/x.rs"),
+            tmp.path(),
+            &tmp.path().join("config"),
+        );
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
+    }
+
+    #[test]
+    fn write_into_missing_folder_is_blocked() {
+        let Some(tmp) = paths::git_free_tempdir() else {
+            return;
+        };
+        let outcome = opus_write_to(
+            &tmp.path().join("new/dir/x.rs"),
+            tmp.path(),
+            &tmp.path().join("config"),
+        );
+        assert!(outcome.stdout.contains("does not type"), "{outcome:?}");
     }
 
     #[test]

@@ -11,10 +11,10 @@ use crate::template;
 
 /// True when `outside_repo` lets the rules skip `file`.
 ///
-/// Callers pass a path that is known exactly. An unresolved path must keep
-/// the rules, so callers check that first. Used by the hook and `explain`.
+/// Only file-tool targets may call this. Shell targets always keep the rules.
+/// Used by the hook and `explain`.
 pub fn outside_repo_skips(outside_repo: Action, file: &Path) -> bool {
-    outside_repo == Action::Allow && !paths::in_git_repo(file)
+    outside_repo == Action::Allow && paths::outside_any_repo(file)
 }
 
 /// Message used when `default_action` blocks a file that no rule covers.

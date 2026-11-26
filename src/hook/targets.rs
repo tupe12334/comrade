@@ -22,23 +22,16 @@ const UNMAPPED_EDIT_TOOLS: &[&str] = &["MultiEdit", "NotebookEdit"];
 /// Input keys that can hold the path of the file a tool writes.
 const PATH_KEYS: &[&str] = &["file_path", "path", "notebook_path", "target_file"];
 
-/// A path that an event writes to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WrittenFile {
-    /// The path, as the agent sent it. Relative paths are not resolved here.
-    pub path: String,
-    /// True when the path is known exactly. False means the rules must apply.
-    ///
-    /// File tools give exact paths. A Bash target is exact only when it is a
-    /// literal path and the command does not change directory or target
-    /// another folder.
-    pub exact: bool,
+/// True when the event is a shell call. Its targets are never exempt from the rules.
+pub fn is_shell(event: &HookEvent) -> bool {
+    event.tool.as_deref() == Some("bash")
 }
 
-/// Returns the paths that the event writes to.
+/// Returns the paths that the event writes to, as the agent sent them.
 ///
-/// Returns an empty list when the event writes no file.
-pub fn written_files(event: &HookEvent) -> Result<Vec<WrittenFile>> {
+/// Returns an empty list when the event writes no file. Relative paths are
+/// not resolved here.
+pub fn written_files(event: &HookEvent) -> Result<Vec<String>> {
     let Some(tool) = event.tool.as_deref() else {
         return Ok(Vec::new());
     };
@@ -49,46 +42,16 @@ pub fn written_files(event: &HookEvent) -> Result<Vec<WrittenFile>> {
             .iter()
             .find_map(|key| string_field(input, key))
             .ok_or_else(|| Error::HookInput(format!("`{tool}` input has no string path field")))?;
-        return Ok(vec![WrittenFile { path, exact: true }]);
+        return Ok(vec![path]);
     }
 
     if tool == "bash" {
         let command = string_field(input, "command")
             .ok_or_else(|| Error::HookInput("`bash` input has no string `command`".to_string()))?;
-        let command_exact = !command_moves_target(&command);
-        return Ok(shell_writes::write_targets(&command)
-            .into_iter()
-            .map(|path| WrittenFile {
-                exact: command_exact && is_literal_path(&path),
-                path,
-            })
-            .collect());
+        return Ok(shell_writes::write_targets(&command));
     }
 
     Ok(Vec::new())
-}
-
-/// True when a shell path holds syntax that the hook cannot expand.
-///
-/// `~`, `$`, backticks, globs and braces need a shell to resolve them.
-fn is_literal_path(path: &str) -> bool {
-    !path.contains(['~', '$', '`', '*', '?', '[', '{'])
-}
-
-/// True when the command can change where a relative target lands.
-///
-/// Looks for `cd`, `pushd` or `popd`, and for any option that sets a target
-/// folder (`-t`, or a flag group that holds `t`, or `--target-directory`). It
-/// over-matches on purpose, so an unclear command fails closed.
-fn command_moves_target(command: &str) -> bool {
-    command
-        .split(|c: char| c.is_whitespace() || ";&|()`".contains(c))
-        .any(|word| {
-            matches!(word, "cd" | "pushd" | "popd")
-                || word == "--target-directory"
-                || word.starts_with("--target-directory=")
-                || (word.starts_with('-') && !word.starts_with("--") && word.contains('t'))
-        })
 }
 
 fn string_field(input: Option<&Map<String, Value>>, key: &str) -> Option<String> {
@@ -105,57 +68,7 @@ mod tests {
 
     fn files(json: &str) -> Result<Vec<String>> {
         let parsed = input::read(json.as_bytes()).expect("polyhook reads the payload");
-        Ok(written_files(&parsed.event)?
-            .into_iter()
-            .map(|f| f.path)
-            .collect())
-    }
-
-    fn exact_flags(json: &str) -> Vec<bool> {
-        let parsed = input::read(json.as_bytes()).expect("polyhook reads the payload");
         written_files(&parsed.event)
-            .unwrap()
-            .into_iter()
-            .map(|f| f.exact)
-            .collect()
-    }
-
-    #[test]
-    fn file_tool_targets_are_exact() {
-        assert_eq!(
-            exact_flags(r#"{"tool_name":"Write","tool_input":{"file_path":"/p/a.rs"}}"#),
-            vec![true]
-        );
-    }
-
-    #[test]
-    fn literal_absolute_bash_target_is_exact() {
-        let json = r#"{"tool_name":"Bash","tool_input":{"command":"echo x > /tmp/s/step.sh"}}"#;
-        assert_eq!(exact_flags(json), vec![true]);
-    }
-
-    #[test]
-    fn tilde_target_is_not_exact() {
-        let json = r#"{"tool_name":"Bash","tool_input":{"command":"echo x > ~/repo/src/zz.rs"}}"#;
-        assert_eq!(exact_flags(json), vec![false]);
-    }
-
-    #[test]
-    fn variable_target_is_not_exact() {
-        let json = r#"{"tool_name":"Bash","tool_input":{"command":"echo x > $HOME/repo/zz.rs"}}"#;
-        assert_eq!(exact_flags(json), vec![false]);
-    }
-
-    #[test]
-    fn cd_makes_bash_targets_not_exact() {
-        let json = r#"{"tool_name":"Bash","tool_input":{"command":"cd /repo && tee src/main.rs"}}"#;
-        assert_eq!(exact_flags(json), vec![false]);
-    }
-
-    #[test]
-    fn target_directory_option_makes_bash_targets_not_exact() {
-        let json = r#"{"tool_name":"Bash","tool_input":{"command":"cp -t /repo/src a.rs"}}"#;
-        assert_eq!(exact_flags(json), vec![false]);
     }
 
     #[test]
